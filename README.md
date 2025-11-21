@@ -221,12 +221,12 @@ handling.
 
 ## Similar Libraries
 
-**[Sandcrust](https://www.researchgate.net/publication/320748351_Sandcrust_Automatic_Sandboxing_of_Unsafe_Components_in_Rust)** - Academic research project for automatic sandboxing of unsafe components
-**[rusty-fork](https://crates.io/crates/rusty-fork)** - Process isolation for tests ([GitHub](https://github.com/AltSysrq/rusty-fork))
-**[Bastion](https://lib.rs/crates/bastion)** - Fault-tolerant runtime with actor-model supervision
-**[rust_supervisor](https://crates.io/crates/rust_supervisor)** - Erlang/OTP-style supervision for Rust threads
-**[subprocess](https://crates.io/crates/subprocess)** - Execution and interaction with external processes ([GitHub](https://github.com/hniksic/rust-subprocess))
-**[async-process](https://crates.io/crates/async-process)** - Asynchronous process handling
+- **[Sandcrust](https://www.researchgate.net/publication/320748351_Sandcrust_Automatic_Sandboxing_of_Unsafe_Components_in_Rust)** - Academic research project for automatic sandboxing of unsafe components
+- **[rusty-fork](https://crates.io/crates/rusty-fork)** - Process isolation for tests ([GitHub](https://github.com/AltSysrq/rusty-fork))
+- **[Bastion](https://lib.rs/crates/bastion)** - Fault-tolerant runtime with actor-model supervision
+- **[rust_supervisor](https://crates.io/crates/rust_supervisor)** - Erlang/OTP-style supervision for Rust threads
+- **[subprocess](https://crates.io/crates/subprocess)** - Execution and interaction with external processes ([GitHub](https://github.com/hniksic/rust-subprocess))
+- **[async-process](https://crates.io/crates/async-process)** - Asynchronous process handling
 
 | Feature | tarnish | Sandcrust | rusty-fork | Bastion | rust_supervisor | subprocess/async-process |
 |---------|---------|-----------|------------|---------|-----------------|--------------------------|
