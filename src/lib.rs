@@ -703,7 +703,7 @@ pub fn main<T: Task>(parent_main: fn()) {
 /// }
 /// // Parent process logic here
 /// ```
-#[must_use] 
+#[must_use]
 pub fn worker_main<T: Task>() -> Option<i32> {
     let env_name = worker_env_name::<T>();
     if env::var(&env_name).is_err() {
