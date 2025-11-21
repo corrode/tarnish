@@ -22,17 +22,17 @@ impl Task for PanickingTask {
             }
             "error" => {
                 eprintln!("[WORKER] Returning error");
-                Err("Business logic error".to_string())
+                Err("Business logic error".to_owned())
             }
             "divide_by_zero" => {
                 eprintln!("[WORKER] About to divide by zero!");
                 #[allow(unconditional_panic)]
                 let _ = 1 / 0; // This will panic
-                Ok("Never reached".to_string())
+                Ok("Never reached".to_owned())
             }
             _ => {
-                let result = format!("Processed: {}", input);
-                eprintln!("[WORKER] Returning: {}", result);
+                let result = format!("Processed: {input}");
+                eprintln!("[WORKER] Returning: {result}");
                 Ok(result)
             }
         }
@@ -59,19 +59,19 @@ fn parent_main() {
     ];
 
     for (input, description) in test_cases {
-        println!("Test: {} - {}", input, description);
+        println!("Test: {input} - {description}");
 
         // Task restarts automatically on crash, we control retry logic
-        let result = process.call(input.to_string()).or_else(|e| {
-            println!("  First attempt failed: {}", e);
+        let result = process.call(input.to_owned()).or_else(|e| {
+            println!("  First attempt failed: {e}");
             println!("  Retrying...");
             // Task was auto-restarted, just retry
-            process.call(input.to_string())
+            process.call(input.to_owned())
         });
 
         match result {
-            Ok(result) => println!("  ✓ Success: {}\n", result),
-            Err(e) => println!("  ✗ Error: {}\n", e),
+            Ok(result) => println!("  ✓ Success: {result}\n"),
+            Err(e) => println!("  ✗ Error: {e}\n"),
         }
 
         // Small delay to make output more readable

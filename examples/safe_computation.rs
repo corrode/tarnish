@@ -13,15 +13,15 @@ impl Task for Calculator {
         // Try to parse as number
         let num: i32 = input
             .parse()
-            .map_err(|_| format!("Cannot parse '{}' as number", input))?;
+            .map_err(|_| format!("Cannot parse '{input}' as number"))?;
 
         // Division by zero would panic without proper handling
         if num == 0 {
-            return Err("Division by zero".to_string());
+            return Err("Division by zero".to_owned());
         }
 
         let result = 100 / num;
-        Ok(format!("{}", result))
+        Ok(format!("{result}"))
     }
 }
 
@@ -44,11 +44,11 @@ fn parent_main() {
     ];
 
     for (input, description) in test_cases {
-        println!("Testing: {} ({})", input, description);
+        println!("Testing: {input} ({description})");
 
-        match process.call(input.to_string()) {
-            Ok(result) => println!("  ✓ Result: 100 / {} = {}\n", input, result),
-            Err(e) => println!("  ✗ Error: {}\n", e),
+        match process.call(input.to_owned()) {
+            Ok(result) => println!("  ✓ Result: 100 / {input} = {result}\n"),
+            Err(e) => println!("  ✗ Error: {e}\n"),
         }
     }
 

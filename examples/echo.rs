@@ -23,12 +23,11 @@ impl Task for EchoTask {
     type Error = String;
 
     fn run(&mut self, input: Input) -> Result<Output, String> {
-        eprintln!("[WORKER] Processing: {:?}", input);
+        eprintln!("[WORKER] Processing: {input:?}");
 
         let result = match input {
-            Input::Echo(msg) => format!("Echo: {}", msg),
-            Input::Repeat(msg, count) => std::iter::repeat(&msg)
-                .take(count)
+            Input::Echo(msg) => format!("Echo: {msg}"),
+            Input::Repeat(msg, count) => std::iter::repeat_n(&msg, count)
                 .cloned()
                 .collect::<Vec<_>>()
                 .join(" "),
@@ -49,18 +48,18 @@ fn parent_main() {
 
     // Test different input types - serialization is automatic!
     let inputs = vec![
-        Input::Echo("Hello".to_string()),
-        Input::Echo("World".to_string()),
-        Input::Repeat("Hi".to_string(), 3),
-        Input::Repeat("Rust".to_string(), 5),
+        Input::Echo("Hello".to_owned()),
+        Input::Echo("World".to_owned()),
+        Input::Repeat("Hi".to_owned(), 3),
+        Input::Repeat("Rust".to_owned(), 5),
     ];
 
     for input in inputs {
-        println!("[PARENT] Sending: {:?}", input);
+        println!("[PARENT] Sending: {input:?}");
 
         match process.call(input) {
-            Ok(Output::Message(msg)) => println!("[PARENT] Received: {}\n", msg),
-            Err(e) => eprintln!("[PARENT] Error: {}\n", e),
+            Ok(Output::Message(msg)) => println!("[PARENT] Received: {msg}\n"),
+            Err(e) => eprintln!("[PARENT] Error: {e}\n"),
         }
     }
 

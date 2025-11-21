@@ -66,7 +66,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 /// Environment variable prefix for child process detection
-/// The full variable name is: __TARNISH_WORKER_{TypeName}__
+/// The full variable name is: __`TARNISH_WORKER`_{`TypeName`}__
 const WORKER_ENV_PREFIX: &str = "__TARNISH_WORKER_";
 
 /// Maximum time to wait for graceful shutdown before sending SIGKILL
@@ -76,9 +76,8 @@ const GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 fn worker_env_name<T: 'static>() -> String {
     let type_name = any::type_name::<T>()
         .replace("::", "_")
-        .replace("<", "_")
-        .replace(">", "_");
-    format!("{}{}__", WORKER_ENV_PREFIX, type_name)
+        .replace(['<', '>'], "_");
+    format!("{WORKER_ENV_PREFIX}{type_name}__")
 }
 
 /// Protocol message types for parent-child communication
@@ -101,37 +100,37 @@ enum Message {
 impl Message {
     fn encode(&self) -> String {
         match self {
-            Message::Request(s) => format!("REQ:{}", s),
-            Message::Response(s) => format!("RES:{}", s),
-            Message::Error(s) => format!("ERR:{}", s),
-            Message::Shutdown => "SHUTDOWN".to_string(),
-            Message::Ping => "PING".to_string(),
-            Message::Pong => "PONG".to_string(),
+            Self::Request(s) => format!("REQ:{s}"),
+            Self::Response(s) => format!("RES:{s}"),
+            Self::Error(s) => format!("ERR:{s}"),
+            Self::Shutdown => "SHUTDOWN".to_owned(),
+            Self::Ping => "PING".to_owned(),
+            Self::Pong => "PONG".to_owned(),
         }
     }
 
     fn decode(s: &str) -> std::result::Result<Self, String> {
         if s == "SHUTDOWN" {
-            return Ok(Message::Shutdown);
+            return Ok(Self::Shutdown);
         }
         if s == "PING" {
-            return Ok(Message::Ping);
+            return Ok(Self::Ping);
         }
         if s == "PONG" {
-            return Ok(Message::Pong);
+            return Ok(Self::Pong);
         }
 
         if let Some(payload) = s.strip_prefix("REQ:") {
-            return Ok(Message::Request(payload.to_string()));
+            return Ok(Self::Request(payload.to_owned()));
         }
         if let Some(payload) = s.strip_prefix("RES:") {
-            return Ok(Message::Response(payload.to_string()));
+            return Ok(Self::Response(payload.to_owned()));
         }
         if let Some(payload) = s.strip_prefix("ERR:") {
-            return Ok(Message::Error(payload.to_string()));
+            return Ok(Self::Error(payload.to_owned()));
         }
 
-        Err(format!("Invalid message format: {}", s))
+        Err(format!("Invalid message format: {s}"))
     }
 }
 
@@ -157,15 +156,15 @@ pub enum ProcessError {
 impl fmt::Display for ProcessError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ProcessError::SpawnError(e) => write!(f, "Failed to spawn process: {}", e),
-            ProcessError::ExecutablePathError(e) => {
-                write!(f, "Failed to get executable path: {}", e)
+            Self::SpawnError(e) => write!(f, "Failed to spawn process: {e}"),
+            Self::ExecutablePathError(e) => {
+                write!(f, "Failed to get executable path: {e}")
             }
-            ProcessError::CommunicationError(e) => write!(f, "Communication error: {}", e),
-            ProcessError::ProcessTerminated => write!(f, "Process terminated unexpectedly"),
-            ProcessError::ProcessPanicked(msg) => write!(f, "Process panicked: {}", msg),
-            ProcessError::TaskError(msg) => write!(f, "Task error: {}", msg),
-            ProcessError::ProtocolError(msg) => write!(f, "Protocol error: {}", msg),
+            Self::CommunicationError(e) => write!(f, "Communication error: {e}"),
+            Self::ProcessTerminated => write!(f, "Process terminated unexpectedly"),
+            Self::ProcessPanicked(msg) => write!(f, "Process panicked: {msg}"),
+            Self::TaskError(msg) => write!(f, "Task error: {msg}"),
+            Self::ProtocolError(msg) => write!(f, "Protocol error: {msg}"),
         }
     }
 }
@@ -174,7 +173,7 @@ impl std::error::Error for ProcessError {}
 
 impl From<io::Error> for ProcessError {
     fn from(err: io::Error) -> Self {
-        ProcessError::CommunicationError(err)
+        Self::CommunicationError(err)
     }
 }
 
@@ -236,8 +235,8 @@ mod serde_impl {
     /// Blanket implementation for all Deserialize types
     impl<T: for<'de> Deserialize<'de>> MessageDecode for T {
         fn decode(s: &str) -> std::result::Result<Self, String> {
-            let bytes = base64_decode(s).map_err(|e| format!("Base64 decode error: {}", e))?;
-            postcard::from_bytes(&bytes).map_err(|e| format!("Deserialization error: {}", e))
+            let bytes = base64_decode(s).map_err(|e| format!("Base64 decode error: {e}"))?;
+            postcard::from_bytes(&bytes).map_err(|e| format!("Deserialization error: {e}"))
         }
     }
 
@@ -256,7 +255,7 @@ mod serde_impl {
         let mut result = String::new();
 
         for chunk in bytes.chunks(3) {
-            let mut buf = [0u8; 3];
+            let mut buf = [0_u8; 3];
             for (i, &byte) in chunk.iter().enumerate() {
                 buf[i] = byte;
             }
@@ -286,7 +285,7 @@ mod serde_impl {
     fn base64_decode(s: &str) -> std::result::Result<Vec<u8>, String> {
         let s = s.trim_end_matches('=');
         let mut result = Vec::new();
-        let mut buf = 0u32;
+        let mut buf = 0_u32;
         let mut bits = 0;
 
         for ch in s.chars() {
@@ -296,7 +295,7 @@ mod serde_impl {
                 '0'..='9' => ch as u32 - '0' as u32 + 52,
                 '+' => 62,
                 '/' => 63,
-                _ => return Err(format!("Invalid base64 character: {}", ch)),
+                _ => return Err(format!("Invalid base64 character: {ch}")),
             };
 
             buf = (buf << 6) | val;
@@ -446,7 +445,7 @@ impl<T: Task> Process<T> {
         let stdin = child.stdin.take().expect("Failed to get child stdin");
         let stdout = child.stdout.take().expect("Failed to get child stdout");
 
-        Ok(Process {
+        Ok(Self {
             child,
             stdin: BufWriter::new(stdin),
             stdout: BufReader::new(stdout),
@@ -463,7 +462,7 @@ impl<T: Task> Process<T> {
         let encoded_input = input.encode();
 
         // Send request
-        if let Err(e) = self.send_message(&Message::Request(encoded_input.clone())) {
+        if let Err(e) = self.send_message(&Message::Request(encoded_input)) {
             // Task is likely dead, restart it
             self.restart()?;
             return Err(e);
@@ -474,7 +473,7 @@ impl<T: Task> Process<T> {
             Ok(Message::Response(encoded_output)) => {
                 // Decode the output
                 T::Output::decode(&encoded_output).map_err(|e| {
-                    ProcessError::ProtocolError(format!("Failed to decode output: {}", e))
+                    ProcessError::ProtocolError(format!("Failed to decode output: {e}"))
                 })
             }
             Ok(Message::Error(err)) => Err(ProcessError::TaskError(err)),
@@ -482,8 +481,7 @@ impl<T: Task> Process<T> {
                 // Unexpected message, restart worker
                 self.restart()?;
                 Err(ProcessError::ProtocolError(format!(
-                    "Unexpected message: {:?}",
-                    msg
+                    "Unexpected message: {msg:?}"
                 )))
             }
             Err(e) => {
@@ -496,7 +494,7 @@ impl<T: Task> Process<T> {
 
     fn send_message(&mut self, msg: &Message) -> Result<()> {
         let encoded = msg.encode();
-        writeln!(self.stdin, "{}", encoded)?;
+        writeln!(self.stdin, "{encoded}")?;
         self.stdin.flush()?;
         Ok(())
     }
@@ -512,7 +510,7 @@ impl<T: Task> Process<T> {
         // Remove trailing newline
         let line = line.trim_end();
 
-        Message::decode(line).map_err(|e| ProcessError::ProtocolError(e))
+        Message::decode(line).map_err(ProcessError::ProtocolError)
     }
 
     fn restart(&mut self) -> Result<()> {
@@ -561,7 +559,7 @@ impl<T: Task> Drop for Process<T> {
 
 /// Handle worker process mode in your main function
 ///
-/// Call this at the start of your main() function. If it returns `Some(exit_code)`,
+/// Call this at the start of your `main()` function. If it returns `Some(exit_code)`,
 /// you're running in worker mode and should exit with that code.
 ///
 /// # Example
@@ -655,6 +653,7 @@ pub fn main<T: Task>(parent_main: fn()) {
 ///     // Parent process logic here
 /// }
 /// ```
+#[must_use] 
 pub fn worker_main<T: Task>() -> Option<i32> {
     let env_name = worker_env_name::<T>();
     if env::var(&env_name).is_err() {
@@ -682,7 +681,7 @@ fn run_worker_loop<T: Task>() -> i32 {
         let bytes_read = match stdin.read_line(&mut line) {
             Ok(n) => n,
             Err(e) => {
-                eprintln!("[CHILD] Failed to read from parent: {}", e);
+                eprintln!("[CHILD] Failed to read from parent: {e}");
                 return 1;
             }
         };
@@ -698,7 +697,7 @@ fn run_worker_loop<T: Task>() -> i32 {
         let message = match Message::decode(line) {
             Ok(msg) => msg,
             Err(e) => {
-                eprintln!("[CHILD] Protocol error: {}", e);
+                eprintln!("[CHILD] Protocol error: {e}");
                 return 1;
             }
         };
@@ -719,8 +718,8 @@ fn run_worker_loop<T: Task>() -> i32 {
                 let input = match T::Input::decode(&encoded_input) {
                     Ok(inp) => inp,
                     Err(e) => {
-                        eprintln!("[WORKER] Failed to decode input: {}", e);
-                        let err_msg = Message::Error(format!("Decode error: {}", e));
+                        eprintln!("[WORKER] Failed to decode input: {e}");
+                        let err_msg = Message::Error(format!("Decode error: {e}"));
                         if send_message(&mut stdout, &err_msg).is_err() {
                             return 1;
                         }
