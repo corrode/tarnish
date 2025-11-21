@@ -237,10 +237,7 @@ handling.
 | Built-in IPC | ✓ | ✓ | ✗ | ✓ | ✗ | ✗ |
 | Trait-based API | ✓ | ✗ | ✗ | ✓ | ✓ | ✗ |
 | FFI focus | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ |
-| Test isolation | ✗ | ✗ | ✓ | ✗ | ✗ | ✗ |
-| Actor model | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ |
-| Macro-based | ✗ | ✓ | ✗ | ✗ | ✗ | ✗ |
-| External commands | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ |
+| External commands | ✓ | ✗ | ✗ | ✗ | ✗ | ✓ |
 | Active maintenance | ✓ | ✗ | ✓ | ✓ | ✓ | ✓ |
 
 ## About The Name
