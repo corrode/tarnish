@@ -15,48 +15,53 @@
 //! # Example
 //!
 //! ```no_run
-//! use tarnish::{Task, Process, worker_main};
-//! use std::fmt;
+//! use tarnish::{Task, Process};
 //!
-//! // Define your worker
 //! #[derive(Default)]
 //! struct Calculator;
 //!
-//! #[derive(Debug)]
-//! struct CalcError(String);
-//!
-//! impl fmt::Display for CalcError {
-//!     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-//!         write!(f, "{}", self.0)
-//!     }
-//! }
-//!
 //! impl Task for Calculator {
-//!     type Error = CalcError;
+//!     type Input = String;
+//!     type Output = String;
+//!     type Error = String;
 //!
-//!     fn run(&mut self, input: &str) -> Result<String, Self::Error> {
+//!     fn run(&mut self, input: String) -> Result<String, String> {
 //!         let num: i32 = input.parse()
-//!             .map_err(|e| CalcError(format!("Parse error: {}", e)))?;
+//!             .map_err(|e| format!("Parse error: {e}"))?;
 //!         Ok(format!("Result: {}", num * 2))
 //!     }
 //! }
 //!
 //! fn main() {
-//!     // Handle child process mode
-//!     if let Some(exit_code) = worker_main::<Calculator>() {
-//!         std::process::exit(exit_code);
-//!     }
+//!     tarnish::main::<Calculator>(parent_main);
+//! }
 //!
-//!     // Parent process - spawn and use the worker
+//! fn parent_main() {
 //!     let mut process = Process::<Calculator>::spawn()
 //!         .expect("Failed to spawn process");
 //!
-//!     match process.call("42") {
-//!         Ok(result) => println!("Success: {}", result),
-//!         Err(e) => eprintln!("Error: {}", e),
+//!     match process.call("42".to_string()) {
+//!         Ok(result) => println!("Success: {result}"),
+//!         Err(e) => eprintln!("Error: {e}"),
 //!     }
 //! }
 //! ```
+//!
+//! # Clippy Lint Allowances
+//!
+//! This crate allows certain restrictive lints where they don't add value:
+//! - `missing_docs_in_private_items`: Internal implementation details don't need docs
+//! - `arithmetic_side_effects`: Base64 encoding uses safe arithmetic
+//! - `indexing_slicing`: Base64 uses bounds-checked indexing
+//! - `pattern_type_mismatch`: Pattern matching on internal enums is intentional
+//! - `shadow_reuse`: Trimming strings is a common pattern
+
+// Allow certain restrictive lints that don't add value for this crate
+#![allow(
+    clippy::missing_docs_in_private_items,
+    clippy::pattern_type_mismatch,
+    clippy::multiple_crate_versions
+)]
 
 use std::any;
 use std::env;
@@ -209,7 +214,9 @@ pub trait MessageEncode {
 pub trait MessageDecode: Sized {
     /// Decode a string into a message
     ///
-    /// Returns an error if the string cannot be decoded.
+    /// # Errors
+    ///
+    /// Returns an error if the string cannot be decoded into the expected type.
     fn decode(s: &str) -> std::result::Result<Self, String>;
 }
 
@@ -225,6 +232,8 @@ mod serde_impl {
     /// for safe string transmission over stdin/stdout.
     impl<T: Serialize> MessageEncode for T {
         fn encode(&self) -> String {
+            // SAFETY: Postcard serialization of valid Serialize types should never fail
+            #[allow(clippy::expect_used)]
             let bytes =
                 postcard::to_allocvec(self).expect("Serialization should not fail for valid types");
             // Use base64 encoding for safe string transmission
@@ -249,6 +258,11 @@ mod serde_impl {
     //
     // This adds ~33% overhead but is simple and correct. Alternative would be
     // length-prefixed framing which is more complex.
+    #[allow(
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::unseparated_literal_suffix
+    )]
     fn base64_encode(bytes: &[u8]) -> String {
         const BASE64_CHARS: &[u8] =
             b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -282,6 +296,7 @@ mod serde_impl {
         result
     }
 
+    #[allow(clippy::arithmetic_side_effects, clippy::shadow_reuse)]
     fn base64_decode(s: &str) -> std::result::Result<Vec<u8>, String> {
         let s = s.trim_end_matches('=');
         let mut result = Vec::new();
@@ -303,7 +318,11 @@ mod serde_impl {
 
             if bits >= 8 {
                 bits -= 8;
-                result.push((buf >> bits) as u8);
+                // Truncation is intentional - extracting byte from decoded bits
+                #[allow(clippy::cast_possible_truncation)]
+                {
+                    result.push((buf >> bits) as u8);
+                }
                 buf &= (1 << bits) - 1;
             }
         }
@@ -388,6 +407,10 @@ pub trait Task: Default + 'static {
     /// Process a request
     ///
     /// This method is called in the worker process for each request from the parent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error of type `Self::Error` if the task fails.
     fn run(&mut self, input: Self::Input) -> std::result::Result<Self::Output, Self::Error>;
 }
 
@@ -405,14 +428,16 @@ pub trait Task: Default + 'static {
 /// struct MyTask;
 ///
 /// impl Task for MyTask {
+///     type Input = String;
+///     type Output = String;
 ///     type Error = String;
-///     fn run(&mut self, input: &str) -> Result<String, String> {
-///         Ok(format!("Processed: {}", input))
+///     fn run(&mut self, input: String) -> Result<String, String> {
+///         Ok(format!("Processed: {input}"))
 ///     }
 /// }
 ///
 /// let mut process = Process::<MyTask>::spawn().unwrap();
-/// let result = process.call("hello").unwrap();
+/// let result = process.call("hello".to_string()).unwrap();
 /// ```
 pub struct Process<T: Task> {
     child: Child,
@@ -426,6 +451,10 @@ impl<T: Task> Process<T> {
     ///
     /// This spawns a new instance of the current binary which should call
     /// `worker_main::<W>()` in its main function.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the process cannot be spawned or if stdin/stdout cannot be captured.
     pub fn spawn() -> Result<Self> {
         Self::spawn_internal()
     }
@@ -442,7 +471,10 @@ impl<T: Task> Process<T> {
             .spawn()
             .map_err(ProcessError::SpawnError)?;
 
+        // SAFETY: stdin/stdout are guaranteed to be Some because we piped them
+        #[allow(clippy::expect_used)]
         let stdin = child.stdin.take().expect("Failed to get child stdin");
+        #[allow(clippy::expect_used)]
         let stdout = child.stdout.take().expect("Failed to get child stdout");
 
         Ok(Self {
@@ -458,6 +490,11 @@ impl<T: Task> Process<T> {
     /// Sends a request to the worker process and waits for a response.
     /// If the worker has crashed, automatically restarts it and returns an error.
     /// The caller can decide whether to retry the operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if communication fails, the worker crashes, or the task returns an error.
+    #[allow(clippy::needless_pass_by_value)] // We want ownership to prevent reuse of stale data
     pub fn call(&mut self, input: T::Input) -> Result<T::Output> {
         let encoded_input = input.encode();
 
@@ -499,6 +536,7 @@ impl<T: Task> Process<T> {
         Ok(())
     }
 
+    #[allow(clippy::shadow_reuse)] // Trimming string is idiomatic
     fn receive_message(&mut self) -> Result<Message> {
         let mut line = String::new();
         let bytes_read = self.stdout.read_line(&mut line)?;
@@ -514,8 +552,10 @@ impl<T: Task> Process<T> {
     }
 
     fn restart(&mut self) -> Result<()> {
-        // Kill old child
+        // Kill old child - ignore errors if already dead
+        #[allow(clippy::let_underscore_must_use)]
         let _ = self.child.kill();
+        #[allow(clippy::let_underscore_must_use)]
         let _ = self.child.wait();
 
         // Spawn new child and replace self with it
@@ -526,6 +566,10 @@ impl<T: Task> Process<T> {
     }
 
     /// Check if the worker process is still running
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the process status cannot be queried.
     pub fn is_running(&mut self) -> Result<bool> {
         match self.child.try_wait() {
             Ok(Some(_)) => Ok(false),
@@ -552,7 +596,9 @@ impl<T: Task> Drop for Process<T> {
 
         // Graceful shutdown timed out or failed, force kill
         // child.kill() sends SIGKILL on Unix and TerminateProcess on Windows
+        #[allow(clippy::let_underscore_must_use)]
         let _ = self.child.kill();
+        #[allow(clippy::let_underscore_must_use)]
         let _ = self.child.wait();
     }
 }
@@ -571,19 +617,18 @@ impl<T: Task> Drop for Process<T> {
 /// struct MyTask;
 ///
 /// impl Task for MyTask {
+///     type Input = String;
+///     type Output = String;
 ///     type Error = String;
-///     fn run(&mut self, input: &str) -> Result<String, String> {
-///         Ok(format!("Processed: {}", input))
+///     fn run(&mut self, input: String) -> Result<String, String> {
+///         Ok(format!("Processed: {input}"))
 ///     }
 /// }
 ///
-/// fn main() {
-///     if let Some(exit_code) = worker_main::<MyTask>() {
-///         std::process::exit(exit_code);
-///     }
-///
-///     // Parent process logic here
+/// if let Some(exit_code) = worker_main::<MyTask>() {
+///     std::process::exit(exit_code);
 /// }
+/// // Parent process logic here
 /// ```
 /// Entry point for applications using tarnish.
 ///
@@ -594,7 +639,7 @@ impl<T: Task> Drop for Process<T> {
 /// # Example
 ///
 /// ```no_run
-/// use tarnish::{Task, Process, main};
+/// use tarnish::{Task, Process};
 ///
 /// #[derive(Default)]
 /// struct MyTask;
@@ -609,19 +654,19 @@ impl<T: Task> Drop for Process<T> {
 ///     }
 /// }
 ///
-/// fn main() {
-///     main::<MyTask>(parent_main);
-/// }
-///
 /// fn parent_main() {
 ///     let mut process = Process::<MyTask>::spawn()
 ///         .expect("Failed to spawn worker");
 ///
 ///     match process.call("hello".to_string()) {
-///         Ok(result) => println!("Result: {}", result),
-///         Err(e) => eprintln!("Error: {}", e),
+///         Ok(result) => println!("Result: {result}"),
+///         Err(e) => eprintln!("Error: {e}"),
 ///     }
 /// }
+///
+/// # fn main() {
+/// #     tarnish::main::<MyTask>(parent_main);
+/// # }
 /// ```
 pub fn main<T: Task>(parent_main: fn()) {
     let env_name = worker_env_name::<T>();
@@ -645,13 +690,18 @@ pub fn main<T: Task>(parent_main: fn()) {
 /// ```no_run
 /// use tarnish::{Task, Process, worker_main};
 ///
-/// fn main() {
-///     if let Some(exit_code) = worker_main::<MyTask>() {
-///         std::process::exit(exit_code);
-///     }
-///
-///     // Parent process logic here
+/// # #[derive(Default)]
+/// # struct MyTask;
+/// # impl Task for MyTask {
+/// #     type Input = String;
+/// #     type Output = String;
+/// #     type Error = String;
+/// #     fn run(&mut self, input: String) -> Result<String, String> { Ok(input) }
+/// # }
+/// if let Some(exit_code) = worker_main::<MyTask>() {
+///     std::process::exit(exit_code);
 /// }
+/// // Parent process logic here
 /// ```
 #[must_use] 
 pub fn worker_main<T: Task>() -> Option<i32> {
@@ -665,6 +715,8 @@ pub fn worker_main<T: Task>() -> Option<i32> {
     Some(exit_code)
 }
 
+#[allow(clippy::print_stderr)] // Worker process intentionally logs to stderr
+#[allow(clippy::shadow_reuse)] // Wrapping stdin/stdout in buffered readers is idiomatic
 fn run_worker_loop<T: Task>() -> i32 {
     let stdin = io::stdin();
     let stdout = io::stdout();
@@ -738,7 +790,7 @@ fn run_worker_loop<T: Task>() -> i32 {
                     return 1;
                 }
             }
-            _ => {
+            Message::Response(_) | Message::Error(_) | Message::Pong => {
                 eprintln!("[CHILD] Unexpected message type");
                 return 1;
             }

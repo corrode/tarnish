@@ -1,3 +1,12 @@
+// Examples are allowed to use print statements and debug formatting
+#![allow(
+    clippy::print_stdout,
+    clippy::print_stderr,
+    clippy::use_debug,
+    clippy::expect_used,
+    clippy::missing_docs_in_private_items
+)]
+
 use serde::{Deserialize, Serialize};
 use tarnish::{Process, Task};
 
