@@ -1,4 +1,4 @@
-# Tarnish
+# tarnish
 
 A library for running code in isolated processes with automatic panic recovery.
 
@@ -6,41 +6,44 @@ A library for running code in isolated processes with automatic panic recovery.
 
 Sometimes you need to run code that might crash. Maybe you're calling into a C
 library through FFI, and somewhere in that library there's a null pointer
-dereference waiting to happen. Or you're loading plugins from users and can't
-guarantee they won't panic. Or you're experimenting with code that isn't quite
-stable yet.
+dereference in disguise? Or you're loading plugins from users and can't
+guarantee they won't panic. Or you're using a third-party sys-crate that wasn't
+audited yet.
 
 Rust's type system can't protect you from segfaults in C code. It can't prevent
-an abort() call in a dependency. When those things happen, your entire process
-terminates.
+an `abort()` call in a dependency either. When those things happen, the entire
+process terminates.
 
 This library was born out of necessity to handle the specific problem of
-wrapping a sys-crate that made unsafe FFI calls. With tarnish, the dangerous
-bits run in a separate process. If that crashes, the parent process detects the
-failure and spawns a fresh worker.
+wrapping an untrusted sys-crate that made unsafe calls to C. With tarnish, the
+dangerous parts run in a separate process. If that crashes, the parent process
+detects the failure and spawns a new worker.
 
-This pattern turns out to be useful beyond FFI. It can be helpful for plugin
-systems and untrusted code. Any code where you can't guarantee stability can be
-isolated this way. That said, I haven't used it extensively outside of the FFI
-use case yet, so be cautious.
+This pattern turns out to be useful for various kinds of systems programming.
+Any code where you can't guarantee stability can be isolated this way, which is
+why I generalized the pattern into a reusable library. That said, I haven't used
+it specifically outside of my narrow FFI use case yet, so be cautious still.
 
-## How it works
+## Under The Hood
 
-The trick is surprisingly simple. You implement a `Worker` trait that defines
-your risky business logic. When you spawn a worker, the library runs a fresh
-copy of your own binary, but with a special environment variable set. Your
-`main()` function checks for this variable at startup. If it's there, you know
-you're the worker subprocess, and you should run the worker logic. If it's not
-there, you're the parent, and you can spawn as many workers as you want.
+The trick is surprisingly simple.
+
+You implement a `Worker` trait that encapsulates your risky business logic. When
+you spawn a worker, the library creates a fresh copy of your own binary, but
+with a special environment variable set. Your `main()` function checks for this
+variable at startup. If it's there, you know you're the worker subprocess, and
+you should run the worker logic. If it's not there, you're the parent, and you
+can spawn workers as needed. 
 
 This is conceptually similar to the classic fork pattern on Unix systems, but it
 works on any platform that can spawn processes. The parent and worker
 communicate over `stdin` and `stdout`, using messages which get serialized with
 [postcard](https://github.com/jamesmunns/postcard), then base64 encoded so they
-play nice with text streams.
+play nice with text streams. The concrete messaging format is an implementation
+detail that you should not rely on, as it can change in future versions.
 
-You define your protocol with plain Rust types. Serialization happens
-automatically through serde.
+Serialization and deserialization happens automatically, so contrary to the Unix
+fork-exec model, you only need to worry about the business logic. 
 
 When a worker panics or crashes, the parent notices immediately. It spawns a
 fresh worker and retries the operation. If the crash was transient (cosmic ray,
@@ -50,7 +53,7 @@ Either way, your parent process keeps running.
 
 ## Worker Trait
 
-The worker trait looks like this: 
+The worker trait looks like this:
 
 ```rust
 pub trait Worker: Default + 'static {
@@ -62,39 +65,43 @@ pub trait Worker: Default + 'static {
 }
 ```
 
-Your input and output types just need to derive `Serialize` and `Deserialize`. Everything else happens behind the scenes.
+Your input and output types just need to derive `Serialize` and `Deserialize`.
+Everything else happens behind the scenes. You can also use types from the
+standard library like `String` for both input and output if that's all you need.
+There is a blanket implementation for those.
 
-## Example Use-Case: Wrapping unsafe FFI
+## Example Use-Case: Wrapping Unsafe FFI
 
-The main use-case for now is isolating unsafe FFI calls.
+The original use-case is isolating unsafe FFI calls, so let's look at an example
+in that context.
 
 ```rust
-use tarnish::{Worker, Process, worker_main};
+use tarnish::{Worker, Process, run};
 use serde::{Serialize, Deserialize};
 
 #[derive(Default)]
 struct UnsafeFFIWrapper;
 
-// You have to define your own input/output types
+// Define your input/output types
 
 #[derive(Serialize, Deserialize)]
-struct FFIRequest {
+struct Input {
     operation: String,
     data: Vec<u8>,
 }
 
 #[derive(Serialize, Deserialize)]
-struct FFIResponse {
+struct Output {
     success: bool,
     data: Vec<u8>,
 }
 
 impl Worker for UnsafeFFIWrapper {
-    type Input = FFIRequest;
-    type Output = FFIResponse;
+    type Input = Input;
+    type Output = Output;
     type Error = String;
 
-    fn run(&mut self, input: FFIRequest) -> Result<FFIResponse, String> {
+    fn run(&mut self, input: Input) -> Result<Output, String> {
         // This unsafe block might segfault or corrupt memory!
         // But if it does, only this process dies and not the parent.
         unsafe {
@@ -108,7 +115,7 @@ impl Worker for UnsafeFFIWrapper {
             }
 
             // Process the result...
-            Ok(FFIResponse {
+            Ok(Output {
                 success: true,
                 data: vec![],
             })
@@ -117,23 +124,21 @@ impl Worker for UnsafeFFIWrapper {
 }
 
 fn main() {
-    // This must be first - handles worker process mode
-    if let Some(exit_code) = worker_main::<UnsafeFFIWrapper>() {
-        std::process::exit(exit_code);
-    }
+    run::<UnsafeFFIWrapper, _>(parent_main);
+}
 
-    // Parent process code
+fn parent_main() {
     let mut process = Process::<UnsafeFFIWrapper>::spawn()
         .expect("Failed to spawn worker");
 
-    let request = FFIRequest {
+    let input = Input {
         operation: "transform".to_string(),
         data: vec![1, 2, 3, 4],
     };
 
-    match process.call(request) {
-        Ok(response) => {
-            println!("FFI call succeeded: {:?}", response);
+    match process.call(input) {
+        Ok(output) => {
+            println!("FFI call succeeded: {:?}", output);
         }
         Err(e) => {
             // If the C code segfaulted, we'll see an error here
@@ -149,19 +154,22 @@ extern "C" {
 }
 ```
 
+Note how `main` just calls `tarnish::run()` with the actual parent logic as a
+closure. This handles the check for parent-vs-worker automatically.
+
 ## Shutdown
 
 When you drop a `Process` handle, it sends a shutdown message to the worker and
 waits up to 5 seconds. If the worker doesn't exit cleanly, it gets a `SIGKILL`.
 
-## When workers crash
+## When Workers Die
 
-Here's what happens when a worker dies mid-operation:
+TODO!: This section is outdated if we don't handle retries anymore. Fix that.
 
-The parent tries to read the response and gets... nothing. The pipe is broken.
-The worker is gone. No problem. The parent spawns a fresh worker process and
-retries the operation. If it works this time, great! Your code gets the result
-like nothing happened. If it crashes again, the parent gives up and returns an
+Here's what happens when a worker crashes mid-operation:
+
+1. The parent tries to read the output and gets nothing, but the pipe is broken and the worker is gone.
+2. The parent spawns a fresh worker process and retries the operation. If it works this time, great! Your code gets the result like nothing happened. If it crashes again, the parent gives up and returns an
 error to your code.
 
 This retry-once strategy handles transient failures gracefully (maybe the worker
@@ -201,10 +209,12 @@ handling.
 
 ## About the name
 
-Tarnish is the protective layer that forms on metal when it's exposed to air. It
-looks like damage, but it's actually protecting the metal underneath from
-further corrosion. When you scratch it off, it just grows back.
+[Tarnish](https://en.wikipedia.org/wiki/Tarnish) is the protective layer that
+forms on metal when it's exposed to air. It looks like damage, but it's actually
+protecting the metal underneath from further corrosion. When you scratch it off,
+it just grows back.
 
-This library is similar. The worker process is the tarnish. It takes the hits so
-your main process doesn't have to. When it gets damaged, we regenerate it. The
-protection continues.
+I think you now understand where I'm going with this. This library is similar.
+The worker process is "the tarnish." It takes the hits so your main process
+doesn't have to. When it gets damaged, we regenerate it. The protection
+continues. This and the Rust pun.

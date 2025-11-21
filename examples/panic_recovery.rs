@@ -1,4 +1,4 @@
-use tarnish::{worker_main, Worker, Process};
+use tarnish::{run, Worker, Process};
 
 // Worker that panics on specific input
 #[derive(Default)]
@@ -43,11 +43,11 @@ impl Worker for PanickingWorker {
 }
 
 fn main() {
-    if let Some(exit_code) = worker_main::<PanickingWorker>() {
-        std::process::exit(exit_code);
-    }
+    run::<PanickingWorker, _>(parent_main);
+}
 
-    println!("=== Panic Recovery Example ===\n");
+fn parent_main() {
+    println!("Panic Recovery Example\n");
     println!("This demonstrates automatic process restart on panic\n");
 
     let mut process = Process::<PanickingWorker>::spawn()
@@ -74,7 +74,7 @@ fn main() {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
 
-    println!("=== All tests completed ===");
+    println!("All tests completed");
     println!("Note: Worker process was restarted automatically after panics");
     println!("Parent process remained stable throughout");
 }

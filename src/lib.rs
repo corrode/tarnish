@@ -1,6 +1,6 @@
-//! # Tarnish - Process Isolation Library
+//! # tarnish, a process Isolation Library
 //!
-//! Tarnish provides process-level isolation for running Rust code with automatic
+//! tarnish provides process-level isolation for running Rust code with automatic
 //! panic recovery and graceful shutdown. Implement the [`Worker`] trait and let
 //! [`Process`] handle the lifecycle management.
 //!
@@ -583,6 +583,74 @@ impl<W: Worker> Drop for Process<W> {
 ///         Ok(format!("Processed: {}", input))
 ///     }
 /// }
+///
+/// fn main() {
+///     if let Some(exit_code) = worker_main::<MyWorker>() {
+///         std::process::exit(exit_code);
+///     }
+///
+///     // Parent process logic here
+/// }
+/// ```
+/// Entry point for applications using tarnish.
+///
+/// This function checks if the current process is running as a worker. If so,
+/// it runs the worker loop and exits. If not, it calls the provided function
+/// with the parent process logic.
+///
+/// # Example
+///
+/// ```no_run
+/// use tarnish::{Worker, Process, run};
+///
+/// #[derive(Default)]
+/// struct MyWorker;
+///
+/// impl Worker for MyWorker {
+///     type Input = String;
+///     type Output = String;
+///     type Error = String;
+///
+///     fn run(&mut self, input: String) -> Result<String, String> {
+///         Ok(input.to_uppercase())
+///     }
+/// }
+///
+/// fn main() {
+///     run::<MyWorker>(parent_main);
+/// }
+///
+/// fn parent_main() {
+///     let mut process = Process::<MyWorker>::spawn()
+///         .expect("Failed to spawn worker");
+///
+///     match process.call("hello".to_string()) {
+///         Ok(result) => println!("Result: {}", result),
+///         Err(e) => eprintln!("Error: {}", e),
+///     }
+/// }
+/// ```
+pub fn run<W: Worker, F: FnOnce()>(parent_main: F) {
+    let env_name = worker_env_name::<W>();
+    if env::var(&env_name).is_ok() {
+        // We're in worker mode - run worker loop and exit
+        let exit_code = run_worker_loop::<W>();
+        std::process::exit(exit_code);
+    }
+
+    // We're the parent process - run parent logic
+    parent_main();
+}
+
+/// Low-level entry point for worker process detection.
+///
+/// Returns `Some(exit_code)` if running as a worker, `None` if running as parent.
+/// Most users should use [`run`] instead, which provides a simpler API.
+///
+/// # Example
+///
+/// ```no_run
+/// use tarnish::{Worker, Process, worker_main};
 ///
 /// fn main() {
 ///     if let Some(exit_code) = worker_main::<MyWorker>() {

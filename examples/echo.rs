@@ -1,15 +1,15 @@
-use tarnish::{worker_main, Process, Worker};
+use tarnish::{run, Process, Worker};
 use serde::{Deserialize, Serialize};
 
-// Define custom message types with automatic serialization
+// Define custom input/output types with automatic serialization
 #[derive(Debug, Clone, Serialize, Deserialize)]
-enum Request {
+enum Input {
     Echo(String),
     Repeat(String, usize),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-enum Response {
+enum Output {
     Message(String),
 }
 
@@ -18,16 +18,16 @@ enum Response {
 struct EchoWorker;
 
 impl Worker for EchoWorker {
-    type Input = Request;
-    type Output = Response;
+    type Input = Input;
+    type Output = Output;
     type Error = String;
 
-    fn run(&mut self, input: Request) -> Result<Response, String> {
+    fn run(&mut self, input: Input) -> Result<Output, String> {
         eprintln!("[WORKER] Processing: {:?}", input);
 
         let result = match input {
-            Request::Echo(msg) => format!("Echo: {}", msg),
-            Request::Repeat(msg, count) => {
+            Input::Echo(msg) => format!("Echo: {}", msg),
+            Input::Repeat(msg, count) => {
                 std::iter::repeat(&msg)
                     .take(count)
                     .cloned()
@@ -36,35 +36,33 @@ impl Worker for EchoWorker {
             }
         };
 
-        Ok(Response::Message(result))
+        Ok(Output::Message(result))
     }
 }
 
 fn main() {
-    // Handle worker process mode
-    if let Some(exit_code) = worker_main::<EchoWorker>() {
-        std::process::exit(exit_code);
-    }
+    run::<EchoWorker, _>(parent_main);
+}
 
-    // Parent process logic
+fn parent_main() {
     println!("[PARENT] Starting echo example with automatic serde serialization\n");
 
     let mut process = Process::<EchoWorker>::spawn()
         .expect("Failed to spawn process");
 
-    // Test different message types - serialization is automatic!
-    let requests = vec![
-        Request::Echo("Hello".to_string()),
-        Request::Echo("World".to_string()),
-        Request::Repeat("Hi".to_string(), 3),
-        Request::Repeat("Rust".to_string(), 5),
+    // Test different input types - serialization is automatic!
+    let inputs = vec![
+        Input::Echo("Hello".to_string()),
+        Input::Echo("World".to_string()),
+        Input::Repeat("Hi".to_string(), 3),
+        Input::Repeat("Rust".to_string(), 5),
     ];
 
-    for req in requests {
-        println!("[PARENT] Sending: {:?}", req);
+    for input in inputs {
+        println!("[PARENT] Sending: {:?}", input);
 
-        match process.call(req) {
-            Ok(Response::Message(msg)) => println!("[PARENT] Received: {}\n", msg),
+        match process.call(input) {
+            Ok(Output::Message(msg)) => println!("[PARENT] Received: {}\n", msg),
             Err(e) => eprintln!("[PARENT] Error: {}\n", e),
         }
     }

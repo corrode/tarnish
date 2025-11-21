@@ -1,4 +1,4 @@
-use tarnish::{worker_main, Worker, Process};
+use tarnish::{run, Worker, Process};
 
 // Worker for potentially dangerous computations
 #[derive(Default)]
@@ -26,11 +26,11 @@ impl Worker for Calculator {
 }
 
 fn main() {
-    if let Some(exit_code) = worker_main::<Calculator>() {
-        std::process::exit(exit_code);
-    }
+    run::<Calculator, _>(parent_main);
+}
 
-    println!("=== Safe Computation Example ===");
+fn parent_main() {
+    println!("Safe Computation Example");
     println!("Running potentially dangerous computations in isolation\n");
 
     let mut process = Process::<Calculator>::spawn()
@@ -53,5 +53,5 @@ fn main() {
         }
     }
 
-    println!("=== All computations completed safely ===");
+    println!("All computations completed safely");
 }
