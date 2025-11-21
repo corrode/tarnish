@@ -158,7 +158,9 @@ impl fmt::Display for ProcessError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ProcessError::SpawnError(e) => write!(f, "Failed to spawn process: {}", e),
-            ProcessError::ExecutablePathError(e) => write!(f, "Failed to get executable path: {}", e),
+            ProcessError::ExecutablePathError(e) => {
+                write!(f, "Failed to get executable path: {}", e)
+            }
             ProcessError::CommunicationError(e) => write!(f, "Communication error: {}", e),
             ProcessError::ProcessTerminated => write!(f, "Process terminated unexpectedly"),
             ProcessError::ProcessPanicked(msg) => write!(f, "Process panicked: {}", msg),
@@ -224,8 +226,8 @@ mod serde_impl {
     /// for safe string transmission over stdin/stdout.
     impl<T: Serialize> MessageEncode for T {
         fn encode(&self) -> String {
-            let bytes = postcard::to_allocvec(self)
-                .expect("Serialization should not fail for valid types");
+            let bytes =
+                postcard::to_allocvec(self).expect("Serialization should not fail for valid types");
             // Use base64 encoding for safe string transmission
             base64_encode(&bytes)
         }
@@ -234,10 +236,8 @@ mod serde_impl {
     /// Blanket implementation for all Deserialize types
     impl<T: for<'de> Deserialize<'de>> MessageDecode for T {
         fn decode(s: &str) -> std::result::Result<Self, String> {
-            let bytes = base64_decode(s)
-                .map_err(|e| format!("Base64 decode error: {}", e))?;
-            postcard::from_bytes(&bytes)
-                .map_err(|e| format!("Deserialization error: {}", e))
+            let bytes = base64_decode(s).map_err(|e| format!("Base64 decode error: {}", e))?;
+            postcard::from_bytes(&bytes).map_err(|e| format!("Deserialization error: {}", e))
         }
     }
 
@@ -251,7 +251,8 @@ mod serde_impl {
     // This adds ~33% overhead but is simple and correct. Alternative would be
     // length-prefixed framing which is more complex.
     fn base64_encode(bytes: &[u8]) -> String {
-        const BASE64_CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        const BASE64_CHARS: &[u8] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
         let mut result = String::new();
 
         for chunk in bytes.chunks(3) {
@@ -267,8 +268,16 @@ mod serde_impl {
 
             result.push(BASE64_CHARS[b1] as char);
             result.push(BASE64_CHARS[b2] as char);
-            result.push(if chunk.len() > 1 { BASE64_CHARS[b3] as char } else { '=' });
-            result.push(if chunk.len() > 2 { BASE64_CHARS[b4] as char } else { '=' });
+            result.push(if chunk.len() > 1 {
+                BASE64_CHARS[b3] as char
+            } else {
+                '='
+            });
+            result.push(if chunk.len() > 2 {
+                BASE64_CHARS[b4] as char
+            } else {
+                '='
+            });
         }
 
         result
@@ -464,8 +473,9 @@ impl<T: Task> Process<T> {
         match self.receive_message() {
             Ok(Message::Response(encoded_output)) => {
                 // Decode the output
-                T::Output::decode(&encoded_output)
-                    .map_err(|e| ProcessError::ProtocolError(format!("Failed to decode output: {}", e)))
+                T::Output::decode(&encoded_output).map_err(|e| {
+                    ProcessError::ProtocolError(format!("Failed to decode output: {}", e))
+                })
             }
             Ok(Message::Error(err)) => Err(ProcessError::TaskError(err)),
             Ok(msg) => {

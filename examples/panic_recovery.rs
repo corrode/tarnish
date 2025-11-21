@@ -1,4 +1,4 @@
-use tarnish::{Task, Process};
+use tarnish::{Process, Task};
 
 // Task that panics on specific input
 #[derive(Default)]
@@ -7,16 +7,13 @@ struct PanickingTask {
 }
 
 impl Task for PanickingTask {
-    type Input = String;  // Use String (has blanket impl)
+    type Input = String; // Use String (has blanket impl)
     type Output = String;
     type Error = String;
 
     fn run(&mut self, input: String) -> Result<String, String> {
         self.call_count += 1;
-        eprintln!(
-            "[WORKER] Call #{}: Processing '{}'",
-            self.call_count, input
-        );
+        eprintln!("[WORKER] Call #{}: Processing '{}'", self.call_count, input);
 
         match input.as_str() {
             "panic" => {
@@ -50,8 +47,7 @@ fn parent_main() {
     println!("Panic Recovery Example\n");
     println!("This demonstrates automatic restart with manual retry\n");
 
-    let mut process = Process::<PanickingTask>::spawn()
-        .expect("Failed to spawn process");
+    let mut process = Process::<PanickingTask>::spawn().expect("Failed to spawn process");
 
     let test_cases = vec![
         ("hello", "Should succeed"),
@@ -66,13 +62,12 @@ fn parent_main() {
         println!("Test: {} - {}", input, description);
 
         // Task restarts automatically on crash, we control retry logic
-        let result = process.call(input.to_string())
-            .or_else(|e| {
-                println!("  First attempt failed: {}", e);
-                println!("  Retrying...");
-                // Task was auto-restarted, just retry
-                process.call(input.to_string())
-            });
+        let result = process.call(input.to_string()).or_else(|e| {
+            println!("  First attempt failed: {}", e);
+            println!("  Retrying...");
+            // Task was auto-restarted, just retry
+            process.call(input.to_string())
+        });
 
         match result {
             Ok(result) => println!("  ✓ Success: {}\n", result),

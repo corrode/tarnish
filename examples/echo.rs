@@ -1,5 +1,5 @@
-use tarnish::{Process, Task};
 use serde::{Deserialize, Serialize};
+use tarnish::{Process, Task};
 
 // Define custom input/output types with automatic serialization
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,13 +27,11 @@ impl Task for EchoTask {
 
         let result = match input {
             Input::Echo(msg) => format!("Echo: {}", msg),
-            Input::Repeat(msg, count) => {
-                std::iter::repeat(&msg)
-                    .take(count)
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            }
+            Input::Repeat(msg, count) => std::iter::repeat(&msg)
+                .take(count)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(" "),
         };
 
         Ok(Output::Message(result))
@@ -47,8 +45,7 @@ fn main() {
 fn parent_main() {
     println!("[PARENT] Starting echo example with automatic serde serialization\n");
 
-    let mut process = Process::<EchoTask>::spawn()
-        .expect("Failed to spawn process");
+    let mut process = Process::<EchoTask>::spawn().expect("Failed to spawn process");
 
     // Test different input types - serialization is automatic!
     let inputs = vec![

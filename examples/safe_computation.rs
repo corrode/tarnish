@@ -1,11 +1,11 @@
-use tarnish::{Task, Process};
+use tarnish::{Process, Task};
 
 // Task for potentially dangerous computations
 #[derive(Default)]
 struct Calculator;
 
 impl Task for Calculator {
-    type Input = String;   // Use String (has blanket impl)
+    type Input = String; // Use String (has blanket impl)
     type Output = String;
     type Error = String;
 
@@ -33,8 +33,7 @@ fn parent_main() {
     println!("Safe Computation Example");
     println!("Running potentially dangerous computations in isolation\n");
 
-    let mut process = Process::<Calculator>::spawn()
-        .expect("Failed to spawn process");
+    let mut process = Process::<Calculator>::spawn().expect("Failed to spawn process");
 
     let test_cases = vec![
         ("10", "Valid: 100 / 10"),
