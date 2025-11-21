@@ -1,4 +1,4 @@
-use tarnish::{run, Process, Worker};
+use tarnish::{run_main, Process, Worker};
 use serde::{Deserialize, Serialize};
 
 // Define custom input/output types with automatic serialization
@@ -41,7 +41,7 @@ impl Worker for EchoWorker {
 }
 
 fn main() {
-    run::<EchoWorker, _>(parent_main);
+    run_main::<EchoWorker>(parent_main);
 }
 
 fn parent_main() {

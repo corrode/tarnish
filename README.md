@@ -76,7 +76,7 @@ The original use-case is isolating unsafe FFI calls, so let's look at an example
 in that context.
 
 ```rust
-use tarnish::{Worker, Process, run};
+use tarnish::{Worker, Process, run_main};
 use serde::{Serialize, Deserialize};
 
 #[derive(Default)]
@@ -124,7 +124,7 @@ impl Worker for UnsafeFFIWrapper {
 }
 
 fn main() {
-    run::<UnsafeFFIWrapper, _>(parent_main);
+    run_main::<UnsafeFFIWrapper>(parent_main);
 }
 
 fn parent_main() {
@@ -154,40 +154,44 @@ extern "C" {
 }
 ```
 
-Note how `main` just calls `tarnish::run()` with the actual parent logic as a
-closure. This handles the check for parent-vs-worker automatically.
+Note how `main` just calls `tarnish::run_main()` with the parent logic function.
+This handles the check for parent-vs-worker automatically.
 
 ## Shutdown
 
 When you drop a `Process` handle, it sends a shutdown message to the worker and
 waits up to 5 seconds. If the worker doesn't exit cleanly, it gets a `SIGKILL`.
 
-## When Workers Die
+## When Workers Crash
 
-TODO!: This section is outdated if we don't handle retries anymore. Fix that.
+When a worker crashes mid-operation, `process.call()` automatically restarts the worker and returns an error. The fresh worker is ready for the next call.
 
-Here's what happens when a worker crashes mid-operation:
+You control the retry logic. Want to retry once?
 
-1. The parent tries to read the output and gets nothing, but the pipe is broken and the worker is gone.
-2. The parent spawns a fresh worker process and retries the operation. If it works this time, great! Your code gets the result like nothing happened. If it crashes again, the parent gives up and returns an
-error to your code.
+```rust
+// Try once, retry on failure
+let result = process.call(input.clone())
+    .or_else(|_| process.call(input));
+```
 
-This retry-once strategy handles transient failures gracefully (maybe the worker
-was unlucky with memory allocation, maybe the C library had a bad day), while
-still surfacing persistent problems (your input deterministically triggers a
-segfault). You get the best of both worlds: resilience against flukes, but no
-infinite retry loops masking real bugs.
+Or implement more sophisticated retry logic with backoff, limits, etc. The library handles keeping a fresh worker available, you decide when to retry.
 
 ## Serialization format
 
 Messages are currently serialized with
 [postcard](https://github.com/jamesmunns/postcard), a compact binary format
-that's roughly 10-20% the size of JSON. It's fast, simple, and works well for
-our purposes. Messages get base64 encoded before being sent over stdin/stdout,
-because binary data and text streams don't always play nicely together.
+that's roughly 10-20% the size of JSON. Messages are then base64 encoded before
+transmission.
+
+**Why base64?** The parent and worker communicate over stdin/stdout using a
+line-based protocol (one message per line). Postcard produces binary output
+which can contain newline bytes that would break our line delimiter. Base64
+encoding ensures messages are text-safe. This adds ~33% overhead but is simple
+and correct. The alternative would be length-prefixed framing, which is more
+complex.
 
 This is an implementation detail. Future versions might change the format, or
-let you pick your own. For now, postcard does the job well.
+let you pick your own. For now, postcard + base64 does the job well.
 
 If you really don't want the serde dependency, you can disable the default
 features and implement `MessageEncode` and `MessageDecode` manually for your
@@ -200,8 +204,7 @@ Each worker type gets its own environment variable based on its type name:
 worker types in the same binary without them stepping on each other's toes.
 
 Workers must implement `Default` (so we can spawn fresh ones) and be `'static`
-(no borrowed data, since they cross process boundaries). Auto-restart currently
-retries exactly once. Maybe that should be configurable. It isn't yet.
+(no borrowed data, since they cross process boundaries).
 
 Only tested on macOS and Linux. It probably works on other Unix-like systems.
 Windows support would require some work around process spawning and signal

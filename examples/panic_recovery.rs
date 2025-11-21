@@ -1,4 +1,4 @@
-use tarnish::{run, Worker, Process};
+use tarnish::{run_main, Worker, Process};
 
 // Worker that panics on specific input
 #[derive(Default)]
@@ -43,12 +43,12 @@ impl Worker for PanickingWorker {
 }
 
 fn main() {
-    run::<PanickingWorker, _>(parent_main);
+    run_main::<PanickingWorker>(parent_main);
 }
 
 fn parent_main() {
     println!("Panic Recovery Example\n");
-    println!("This demonstrates automatic process restart on panic\n");
+    println!("This demonstrates automatic restart with manual retry\n");
 
     let mut process = Process::<PanickingWorker>::spawn()
         .expect("Failed to spawn process");
@@ -56,7 +56,7 @@ fn parent_main() {
     let test_cases = vec![
         ("hello", "Should succeed"),
         ("panic", "Will panic and auto-restart"),
-        ("world", "Should succeed after restart"),
+        ("world", "Should succeed after auto-restart"),
         ("divide_by_zero", "Another panic"),
         ("error", "Business logic error"),
         ("final", "Final successful call"),
@@ -65,7 +65,16 @@ fn parent_main() {
     for (input, description) in test_cases {
         println!("Test: {} - {}", input, description);
 
-        match process.call(input.to_string()) {
+        // Worker restarts automatically on crash, we control retry logic
+        let result = process.call(input.to_string())
+            .or_else(|e| {
+                println!("  First attempt failed: {}", e);
+                println!("  Retrying...");
+                // Worker was auto-restarted, just retry
+                process.call(input.to_string())
+            });
+
+        match result {
             Ok(result) => println!("  ✓ Success: {}\n", result),
             Err(e) => println!("  ✗ Error: {}\n", e),
         }
@@ -75,6 +84,6 @@ fn parent_main() {
     }
 
     println!("All tests completed");
-    println!("Note: Worker process was restarted automatically after panics");
+    println!("Note: Worker was automatically restarted after each crash");
     println!("Parent process remained stable throughout");
 }

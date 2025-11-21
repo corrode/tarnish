@@ -241,7 +241,15 @@ mod serde_impl {
         }
     }
 
-    // Simple base64 encoding/decoding using standard base64 alphabet
+    // Base64 encoding for safe transmission over stdin/stdout.
+    //
+    // We use a line-based protocol (read_line/writeln) for communication between
+    // parent and worker. Postcard produces binary data which can contain newline
+    // bytes that would break our line delimiter. Base64 encoding ensures the
+    // serialized messages are text-safe and won't contain newlines.
+    //
+    // This adds ~33% overhead but is simple and correct. Alternative would be
+    // length-prefixed framing which is more complex.
     fn base64_encode(bytes: &[u8]) -> String {
         const BASE64_CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
         let mut result = String::new();
@@ -437,31 +445,19 @@ impl<W: Worker> Process<W> {
         })
     }
 
-    /// Call the worker with input and wait for response
+    /// Call the worker with input and wait for response.
     ///
     /// Sends a request to the worker process and waits for a response.
-    /// If the worker panics, automatically restarts and retries once.
+    /// If the worker has crashed, automatically restarts it and returns an error.
+    /// The caller can decide whether to retry the operation.
     pub fn call(&mut self, input: W::Input) -> Result<W::Output> {
-        self.call_with_retry(input, true)
-    }
-
-    fn call_with_retry(&mut self, input: W::Input, allow_retry: bool) -> Result<W::Output> {
-        // Encode once for potential retries
         let encoded_input = input.encode();
-        self.call_with_encoded(&encoded_input, allow_retry)
-    }
 
-    fn call_with_encoded(&mut self, encoded_input: &str, allow_retry: bool) -> Result<W::Output> {
         // Send request
-        if let Err(e) = self.send_message(&Message::Request(encoded_input.to_string())) {
-            // Failed to send, child likely dead
-            if allow_retry {
-                eprintln!("[PARENT] Worker not responding, restarting...");
-                self.restart()?;
-                return self.call_with_encoded(encoded_input, false);
-            } else {
-                return Err(e);
-            }
+        if let Err(e) = self.send_message(&Message::Request(encoded_input.clone())) {
+            // Worker is likely dead, restart it
+            self.restart()?;
+            return Err(e);
         }
 
         // Receive response
@@ -473,29 +469,18 @@ impl<W: Worker> Process<W> {
             }
             Ok(Message::Error(err)) => Err(ProcessError::WorkerError(err)),
             Ok(msg) => {
-                // Unexpected message type
-                if allow_retry {
-                    eprintln!("[PARENT] Unexpected message, restarting...");
-                    self.restart()?;
-                    self.call_with_encoded(encoded_input, false)
-                } else {
-                    Err(ProcessError::ProtocolError(format!(
-                        "Unexpected message: {:?}",
-                        msg
-                    )))
-                }
+                // Unexpected message, restart worker
+                self.restart()?;
+                Err(ProcessError::ProtocolError(format!(
+                    "Unexpected message: {:?}",
+                    msg
+                )))
             }
-            Err(ProcessError::ProcessTerminated) | Err(ProcessError::CommunicationError(_)) => {
-                // Child died or communication failed
-                if allow_retry {
-                    eprintln!("[PARENT] Worker terminated, restarting...");
-                    self.restart()?;
-                    self.call_with_encoded(encoded_input, false)
-                } else {
-                    Err(ProcessError::ProcessTerminated)
-                }
+            Err(e) => {
+                // Communication failed, restart worker
+                self.restart()?;
+                Err(e)
             }
-            Err(e) => Err(e),
         }
     }
 
@@ -601,7 +586,7 @@ impl<W: Worker> Drop for Process<W> {
 /// # Example
 ///
 /// ```no_run
-/// use tarnish::{Worker, Process, run};
+/// use tarnish::{Worker, Process, run_main};
 ///
 /// #[derive(Default)]
 /// struct MyWorker;
@@ -617,7 +602,7 @@ impl<W: Worker> Drop for Process<W> {
 /// }
 ///
 /// fn main() {
-///     run::<MyWorker>(parent_main);
+///     run_main::<MyWorker>(parent_main);
 /// }
 ///
 /// fn parent_main() {
@@ -630,7 +615,7 @@ impl<W: Worker> Drop for Process<W> {
 ///     }
 /// }
 /// ```
-pub fn run<W: Worker, F: FnOnce()>(parent_main: F) {
+pub fn run_main<W: Worker>(parent_main: fn()) {
     let env_name = worker_env_name::<W>();
     if env::var(&env_name).is_ok() {
         // We're in worker mode - run worker loop and exit

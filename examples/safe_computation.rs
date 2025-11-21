@@ -1,4 +1,4 @@
-use tarnish::{run, Worker, Process};
+use tarnish::{run_main, Worker, Process};
 
 // Worker for potentially dangerous computations
 #[derive(Default)]
@@ -26,7 +26,7 @@ impl Worker for Calculator {
 }
 
 fn main() {
-    run::<Calculator, _>(parent_main);
+    run_main::<Calculator>(parent_main);
 }
 
 fn parent_main() {
