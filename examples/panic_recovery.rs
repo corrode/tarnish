@@ -1,12 +1,12 @@
-use tarnish::{run_main, Worker, Process};
+use tarnish::{Task, Process};
 
-// Worker that panics on specific input
+// Task that panics on specific input
 #[derive(Default)]
-struct PanickingWorker {
+struct PanickingTask {
     call_count: usize,
 }
 
-impl Worker for PanickingWorker {
+impl Task for PanickingTask {
     type Input = String;  // Use String (has blanket impl)
     type Output = String;
     type Error = String;
@@ -43,14 +43,14 @@ impl Worker for PanickingWorker {
 }
 
 fn main() {
-    run_main::<PanickingWorker>(parent_main);
+    tarnish::main::<PanickingTask>(parent_main);
 }
 
 fn parent_main() {
     println!("Panic Recovery Example\n");
     println!("This demonstrates automatic restart with manual retry\n");
 
-    let mut process = Process::<PanickingWorker>::spawn()
+    let mut process = Process::<PanickingTask>::spawn()
         .expect("Failed to spawn process");
 
     let test_cases = vec![
@@ -65,12 +65,12 @@ fn parent_main() {
     for (input, description) in test_cases {
         println!("Test: {} - {}", input, description);
 
-        // Worker restarts automatically on crash, we control retry logic
+        // Task restarts automatically on crash, we control retry logic
         let result = process.call(input.to_string())
             .or_else(|e| {
                 println!("  First attempt failed: {}", e);
                 println!("  Retrying...");
-                // Worker was auto-restarted, just retry
+                // Task was auto-restarted, just retry
                 process.call(input.to_string())
             });
 
@@ -84,6 +84,6 @@ fn parent_main() {
     }
 
     println!("All tests completed");
-    println!("Note: Worker was automatically restarted after each crash");
+    println!("Note: Task was automatically restarted after each crash");
     println!("Parent process remained stable throughout");
 }

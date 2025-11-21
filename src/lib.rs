@@ -1,12 +1,12 @@
 //! # tarnish, a process Isolation Library
 //!
 //! tarnish provides process-level isolation for running Rust code with automatic
-//! panic recovery and graceful shutdown. Implement the [`Worker`] trait and let
+//! panic recovery and graceful shutdown. Implement the [`Task`] trait and let
 //! [`Process`] handle the lifecycle management.
 //!
 //! # Features
 //!
-//! - **Trait-based API**: Implement [`Worker`] trait with your business logic
+//! - **Trait-based API**: Implement [`Task`] trait with your business logic
 //! - **Auto-restart on panic**: Child processes automatically restart if they panic
 //! - **Graceful shutdown**: Automatic cleanup when [`Process`] is dropped
 //! - **Type-safe**: Generic over your worker type
@@ -15,7 +15,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use tarnish::{Worker, Process, worker_main};
+//! use tarnish::{Task, Process, worker_main};
 //! use std::fmt;
 //!
 //! // Define your worker
@@ -31,7 +31,7 @@
 //!     }
 //! }
 //!
-//! impl Worker for Calculator {
+//! impl Task for Calculator {
 //!     type Error = CalcError;
 //!
 //!     fn run(&mut self, input: &str) -> Result<String, Self::Error> {
@@ -148,8 +148,8 @@ pub enum ProcessError {
     ProcessTerminated,
     /// Child process panicked
     ProcessPanicked(String),
-    /// Worker error from child
-    WorkerError(String),
+    /// Task error from child
+    TaskError(String),
     /// Protocol error
     ProtocolError(String),
 }
@@ -162,7 +162,7 @@ impl fmt::Display for ProcessError {
             ProcessError::CommunicationError(e) => write!(f, "Communication error: {}", e),
             ProcessError::ProcessTerminated => write!(f, "Process terminated unexpectedly"),
             ProcessError::ProcessPanicked(msg) => write!(f, "Process panicked: {}", msg),
-            ProcessError::WorkerError(msg) => write!(f, "Worker error: {}", msg),
+            ProcessError::TaskError(msg) => write!(f, "Task error: {}", msg),
             ProcessError::ProtocolError(msg) => write!(f, "Protocol error: {}", msg),
         }
     }
@@ -336,11 +336,11 @@ mod manual_impl {
 /// # Example
 ///
 /// ```
-/// use tarnish::Worker;
+/// use tarnish::Task;
 /// use serde::{Serialize, Deserialize};
 ///
 /// #[derive(Default)]
-/// struct MyWorker;
+/// struct MyTask;
 ///
 /// // Define your message types with serde
 /// #[derive(Serialize, Deserialize)]
@@ -355,7 +355,7 @@ mod manual_impl {
 /// }
 ///
 /// // Automatic serialization via postcard - no manual encoding needed!
-/// impl Worker for MyWorker {
+/// impl Task for MyTask {
 ///     type Input = Request;
 ///     type Output = Response;
 ///     type Error = String;
@@ -369,7 +369,7 @@ mod manual_impl {
 ///     }
 /// }
 /// ```
-pub trait Worker: Default + 'static {
+pub trait Task: Default + 'static {
     /// Input message type (must be encodable for retry and decodable in worker)
     type Input: MessageEncode + MessageDecode;
     /// Output message type (must be encodable in worker and decodable in parent)
@@ -385,35 +385,35 @@ pub trait Worker: Default + 'static {
 
 /// Handle to a worker process
 ///
-/// Manages the lifecycle of a child process running your [`Worker`] implementation.
+/// Manages the lifecycle of a child process running your [`Task`] implementation.
 /// Automatically restarts on panic and performs graceful shutdown when dropped.
 ///
 /// # Example
 ///
 /// ```no_run
-/// use tarnish::{Worker, Process};
+/// use tarnish::{Task, Process};
 ///
 /// #[derive(Default)]
-/// struct MyWorker;
+/// struct MyTask;
 ///
-/// impl Worker for MyWorker {
+/// impl Task for MyTask {
 ///     type Error = String;
 ///     fn run(&mut self, input: &str) -> Result<String, String> {
 ///         Ok(format!("Processed: {}", input))
 ///     }
 /// }
 ///
-/// let mut process = Process::<MyWorker>::spawn().unwrap();
+/// let mut process = Process::<MyTask>::spawn().unwrap();
 /// let result = process.call("hello").unwrap();
 /// ```
-pub struct Process<W: Worker> {
+pub struct Process<T: Task> {
     child: Child,
     stdin: BufWriter<std::process::ChildStdin>,
     stdout: BufReader<std::process::ChildStdout>,
-    _phantom: std::marker::PhantomData<W>,
+    _phantom: std::marker::PhantomData<T>,
 }
 
-impl<W: Worker> Process<W> {
+impl<T: Task> Process<T> {
     /// Spawn a new worker process
     ///
     /// This spawns a new instance of the current binary which should call
@@ -424,7 +424,7 @@ impl<W: Worker> Process<W> {
 
     fn spawn_internal() -> Result<Self> {
         let exe_path = env::current_exe().map_err(ProcessError::ExecutablePathError)?;
-        let env_name = worker_env_name::<W>();
+        let env_name = worker_env_name::<T>();
 
         let mut child = Command::new(exe_path)
             .env(&env_name, "1")
@@ -450,12 +450,12 @@ impl<W: Worker> Process<W> {
     /// Sends a request to the worker process and waits for a response.
     /// If the worker has crashed, automatically restarts it and returns an error.
     /// The caller can decide whether to retry the operation.
-    pub fn call(&mut self, input: W::Input) -> Result<W::Output> {
+    pub fn call(&mut self, input: T::Input) -> Result<T::Output> {
         let encoded_input = input.encode();
 
         // Send request
         if let Err(e) = self.send_message(&Message::Request(encoded_input.clone())) {
-            // Worker is likely dead, restart it
+            // Task is likely dead, restart it
             self.restart()?;
             return Err(e);
         }
@@ -464,10 +464,10 @@ impl<W: Worker> Process<W> {
         match self.receive_message() {
             Ok(Message::Response(encoded_output)) => {
                 // Decode the output
-                W::Output::decode(&encoded_output)
+                T::Output::decode(&encoded_output)
                     .map_err(|e| ProcessError::ProtocolError(format!("Failed to decode output: {}", e)))
             }
-            Ok(Message::Error(err)) => Err(ProcessError::WorkerError(err)),
+            Ok(Message::Error(err)) => Err(ProcessError::TaskError(err)),
             Ok(msg) => {
                 // Unexpected message, restart worker
                 self.restart()?;
@@ -527,7 +527,7 @@ impl<W: Worker> Process<W> {
     }
 }
 
-impl<W: Worker> Drop for Process<W> {
+impl<T: Task> Drop for Process<T> {
     fn drop(&mut self) {
         // Try graceful shutdown first by sending shutdown message
         if self.send_message(&Message::Shutdown).is_ok() {
@@ -557,12 +557,12 @@ impl<W: Worker> Drop for Process<W> {
 /// # Example
 ///
 /// ```no_run
-/// use tarnish::{Worker, worker_main};
+/// use tarnish::{Task, worker_main};
 ///
 /// #[derive(Default)]
-/// struct MyWorker;
+/// struct MyTask;
 ///
-/// impl Worker for MyWorker {
+/// impl Task for MyTask {
 ///     type Error = String;
 ///     fn run(&mut self, input: &str) -> Result<String, String> {
 ///         Ok(format!("Processed: {}", input))
@@ -570,7 +570,7 @@ impl<W: Worker> Drop for Process<W> {
 /// }
 ///
 /// fn main() {
-///     if let Some(exit_code) = worker_main::<MyWorker>() {
+///     if let Some(exit_code) = worker_main::<MyTask>() {
 ///         std::process::exit(exit_code);
 ///     }
 ///
@@ -586,12 +586,12 @@ impl<W: Worker> Drop for Process<W> {
 /// # Example
 ///
 /// ```no_run
-/// use tarnish::{Worker, Process, run_main};
+/// use tarnish::{Task, Process, main};
 ///
 /// #[derive(Default)]
-/// struct MyWorker;
+/// struct MyTask;
 ///
-/// impl Worker for MyWorker {
+/// impl Task for MyTask {
 ///     type Input = String;
 ///     type Output = String;
 ///     type Error = String;
@@ -602,11 +602,11 @@ impl<W: Worker> Drop for Process<W> {
 /// }
 ///
 /// fn main() {
-///     run_main::<MyWorker>(parent_main);
+///     main::<MyTask>(parent_main);
 /// }
 ///
 /// fn parent_main() {
-///     let mut process = Process::<MyWorker>::spawn()
+///     let mut process = Process::<MyTask>::spawn()
 ///         .expect("Failed to spawn worker");
 ///
 ///     match process.call("hello".to_string()) {
@@ -615,11 +615,11 @@ impl<W: Worker> Drop for Process<W> {
 ///     }
 /// }
 /// ```
-pub fn run_main<W: Worker>(parent_main: fn()) {
-    let env_name = worker_env_name::<W>();
+pub fn main<T: Task>(parent_main: fn()) {
+    let env_name = worker_env_name::<T>();
     if env::var(&env_name).is_ok() {
         // We're in worker mode - run worker loop and exit
-        let exit_code = run_worker_loop::<W>();
+        let exit_code = run_worker_loop::<T>();
         std::process::exit(exit_code);
     }
 
@@ -635,35 +635,35 @@ pub fn run_main<W: Worker>(parent_main: fn()) {
 /// # Example
 ///
 /// ```no_run
-/// use tarnish::{Worker, Process, worker_main};
+/// use tarnish::{Task, Process, worker_main};
 ///
 /// fn main() {
-///     if let Some(exit_code) = worker_main::<MyWorker>() {
+///     if let Some(exit_code) = worker_main::<MyTask>() {
 ///         std::process::exit(exit_code);
 ///     }
 ///
 ///     // Parent process logic here
 /// }
 /// ```
-pub fn worker_main<W: Worker>() -> Option<i32> {
-    let env_name = worker_env_name::<W>();
+pub fn worker_main<T: Task>() -> Option<i32> {
+    let env_name = worker_env_name::<T>();
     if env::var(&env_name).is_err() {
         return None; // Not a worker process
     }
 
     // We're in worker mode
-    let exit_code = run_worker_loop::<W>();
+    let exit_code = run_worker_loop::<T>();
     Some(exit_code)
 }
 
-fn run_worker_loop<W: Worker>() -> i32 {
+fn run_worker_loop<T: Task>() -> i32 {
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut stdin = BufReader::new(stdin);
     let mut stdout = BufWriter::new(stdout);
 
     // Create the worker instance
-    let mut worker = W::default();
+    let mut worker = T::default();
 
     loop {
         let mut line = String::new();
@@ -706,7 +706,7 @@ fn run_worker_loop<W: Worker>() -> i32 {
             }
             Message::Request(encoded_input) => {
                 // Decode the input
-                let input = match W::Input::decode(&encoded_input) {
+                let input = match T::Input::decode(&encoded_input) {
                     Ok(inp) => inp,
                     Err(e) => {
                         eprintln!("[WORKER] Failed to decode input: {}", e);

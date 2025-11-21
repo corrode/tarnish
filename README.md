@@ -17,22 +17,31 @@ process terminates.
 This library was born out of necessity to handle the specific problem of
 wrapping an untrusted sys-crate that made unsafe calls to C. With tarnish, the
 dangerous parts run in a separate process. If that crashes, the parent process
-detects the failure and spawns a new worker.
+detects the failure and spawns a fresh worker.
 
 This pattern turns out to be useful for various kinds of systems programming.
 Any code where you can't guarantee stability can be isolated this way, which is
 why I generalized the pattern into a reusable library. That said, I haven't used
 it specifically outside of my narrow FFI use case yet, so be cautious still.
 
+## Features
+
+- Process-level isolation (survives segfaults/FFI crashes)
+- Automatic restart after crashes
+- Trait-based API (not macro-based)
+- Built-in type-safe message passing
+- Production-focused
+- General-purpose (any code, not just FFI)
+
 ## Under The Hood
 
 The trick is surprisingly simple.
 
-You implement a `Worker` trait that encapsulates your risky business logic. When
+You implement a `Task` trait that encapsulates your risky business logic. When
 you spawn a worker, the library creates a fresh copy of your own binary, but
 with a special environment variable set. Your `main()` function checks for this
 variable at startup. If it's there, you know you're the worker subprocess, and
-you should run the worker logic. If it's not there, you're the parent, and you
+you should run the worker loop. If it's not there, you're the parent, and you
 can spawn workers as needed. 
 
 This is conceptually similar to the classic fork pattern on Unix systems, but it
@@ -43,7 +52,7 @@ play nice with text streams. The concrete messaging format is an implementation
 detail that you should not rely on, as it can change in future versions.
 
 Serialization and deserialization happens automatically, so contrary to the Unix
-fork-exec model, you only need to worry about the business logic. 
+fork-exec model, you only need to worry about the business logic.
 
 When a worker panics or crashes, the parent notices immediately. It spawns a
 fresh worker and retries the operation. If the crash was transient (cosmic ray,
@@ -51,12 +60,12 @@ memory pressure, who knows), the retry succeeds. If it was deterministic (i.e.,
 that input will always crash), the retry fails too, and you get an error back.
 Either way, your parent process keeps running. 
 
-## Worker Trait
+## Task Trait
 
-The worker trait looks like this:
+The task trait looks like this:
 
 ```rust
-pub trait Worker: Default + 'static {
+pub trait Task: Default + 'static {
     type Input: Serialize + Deserialize;
     type Output: Serialize + Deserialize;
     type Error: Display;
@@ -76,7 +85,7 @@ The original use-case is isolating unsafe FFI calls, so let's look at an example
 in that context.
 
 ```rust
-use tarnish::{Worker, Process, run_main};
+use tarnish::{Task, Process, main};
 use serde::{Serialize, Deserialize};
 
 #[derive(Default)]
@@ -96,7 +105,7 @@ struct Output {
     data: Vec<u8>,
 }
 
-impl Worker for UnsafeFFIWrapper {
+impl Task for UnsafeFFIWrapper {
     type Input = Input;
     type Output = Output;
     type Error = String;
@@ -124,7 +133,7 @@ impl Worker for UnsafeFFIWrapper {
 }
 
 fn main() {
-    run_main::<UnsafeFFIWrapper>(parent_main);
+    tarnish::main::<UnsafeFFIWrapper>(parent_main);
 }
 
 fn parent_main() {
@@ -154,17 +163,17 @@ extern "C" {
 }
 ```
 
-Note how `main` just calls `tarnish::run_main()` with the parent logic function.
-This handles the check for parent-vs-worker automatically.
+Note how `main` just calls `tarnish::main()` with the parent logic function.
+This handles the check for parent-vs-task automatically.
 
 ## Shutdown
 
-When you drop a `Process` handle, it sends a shutdown message to the worker and
-waits up to 5 seconds. If the worker doesn't exit cleanly, it gets a `SIGKILL`.
+When you drop a `Process` handle, it sends a shutdown message to the task and
+waits up to 5 seconds. If the task doesn't exit cleanly, it gets a `SIGKILL`.
 
-## When Workers Crash
+## When Tasks Crash
 
-When a worker crashes mid-operation, `process.call()` automatically restarts the worker and returns an error. The fresh worker is ready for the next call.
+When a task crashes mid-operation, `process.call()` automatically restarts the task and returns an error. The fresh task is ready for the next call.
 
 You control the retry logic. Want to retry once?
 
@@ -174,7 +183,7 @@ let result = process.call(input.clone())
     .or_else(|_| process.call(input));
 ```
 
-Or implement more sophisticated retry logic with backoff, limits, etc. The library handles keeping a fresh worker available, you decide when to retry.
+Or implement more sophisticated retry logic with backoff, limits, etc. The library handles keeping a fresh task available, you decide when to retry.
 
 ## Serialization format
 
@@ -183,7 +192,7 @@ Messages are currently serialized with
 that's roughly 10-20% the size of JSON. Messages are then base64 encoded before
 transmission.
 
-**Why base64?** The parent and worker communicate over stdin/stdout using a
+**Why base64?** The parent and task communicate over stdin/stdout using a
 line-based protocol (one message per line). Postcard produces binary output
 which can contain newline bytes that would break our line delimiter. Base64
 encoding ensures messages are text-safe. This adds ~33% overhead but is simple
@@ -199,18 +208,42 @@ types. But honestly, you probably want serde.
 
 ## Notes
 
-Each worker type gets its own environment variable based on its type name:
+Each task type gets its own environment variable based on its type name:
 `__TARNISH_WORKER_{TypeName}__`. This means you can have multiple different
-worker types in the same binary without them stepping on each other's toes.
+task types in the same binary without them stepping on each other's toes.
 
-Workers must implement `Default` (so we can spawn fresh ones) and be `'static`
+Tasks must implement `Default` (so we can spawn fresh ones) and be `'static`
 (no borrowed data, since they cross process boundaries).
 
 Only tested on macOS and Linux. It probably works on other Unix-like systems.
 Windows support would require some work around process spawning and signal
 handling.
 
-## About the name
+## Similar Libraries
+
+**[Sandcrust](https://www.researchgate.net/publication/320748351_Sandcrust_Automatic_Sandboxing_of_Unsafe_Components_in_Rust)** - Academic research project for automatic sandboxing of unsafe components
+**[rusty-fork](https://crates.io/crates/rusty-fork)** - Process isolation for tests ([GitHub](https://github.com/AltSysrq/rusty-fork))
+**[Bastion](https://lib.rs/crates/bastion)** - Fault-tolerant runtime with actor-model supervision
+**[rust_supervisor](https://crates.io/crates/rust_supervisor)** - Erlang/OTP-style supervision for Rust threads
+**[subprocess](https://crates.io/crates/subprocess)** - Execution and interaction with external processes ([GitHub](https://github.com/hniksic/rust-subprocess))
+**[async-process](https://crates.io/crates/async-process)** - Asynchronous process handling
+
+| Feature | tarnish | Sandcrust | rusty-fork | Bastion | rust_supervisor | subprocess/async-process |
+|---------|---------|-----------|------------|---------|-----------------|--------------------------|
+| Process isolation | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ |
+| Automatic restart | ✓ | ✗ | ✗ | ✓ | ✓ | ✗ |
+| Survives segfaults | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ |
+| Production ready | ✓ | ✗ | ✗ | ✓ | ✓ | ✓ |
+| Built-in IPC | ✓ | ✓ | ✗ | ✓ | ✗ | ✗ |
+| Trait-based API | ✓ | ✗ | ✗ | ✓ | ✓ | ✗ |
+| FFI focus | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ |
+| Test isolation | ✗ | ✗ | ✓ | ✗ | ✗ | ✗ |
+| Actor model | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ |
+| Macro-based | ✗ | ✓ | ✗ | ✗ | ✗ | ✗ |
+| External commands | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ |
+| Active maintenance | ✓ | ✗ | ✓ | ✓ | ✓ | ✓ |
+
+## About The Name
 
 [Tarnish](https://en.wikipedia.org/wiki/Tarnish) is the protective layer that
 forms on metal when it's exposed to air. It looks like damage, but it's actually

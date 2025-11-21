@@ -1,12 +1,12 @@
 [package]
 name = "tarnish"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2024"
 authors = []
-description = "Process isolation library with automatic panic recovery and graceful shutdown"
-license = "MIT OR Apache-2.0"
-repository = ""
-keywords = ["process", "isolation", "worker", "fault-tolerance"]
+description = "Process isolation library with automatic panic recovery for running untrusted Rust code"
+license = "MIT"
+repository = "https://github.com/corrode/tarnish"
+keywords = ["process", "isolation", "sandbox", "fault-tolerance", "ffi"]
 categories = ["concurrency", "os"]
 
 [features]
@@ -16,3 +16,59 @@ serde = ["dep:serde", "dep:postcard"]
 [dependencies]
 serde = { version = "1.0", features = ["derive"], optional = true }
 postcard = { version = "1.0", features = ["alloc"], optional = true }
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+
+# Restriction lints - be very strict
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+unimplemented = "warn"
+unreachable = "warn"
+indexing_slicing = "warn"
+arithmetic_side_effects = "warn"
+float_arithmetic = "warn"
+shadow_reuse = "warn"
+shadow_same = "warn"
+shadow_unrelated = "warn"
+string_slice = "warn"
+clone_on_ref_ptr = "warn"
+rc_buffer = "warn"
+rc_mutex = "warn"
+rest_pat_in_fully_bound_structs = "warn"
+try_err = "warn"
+verbose_file_reads = "warn"
+use_debug = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+dbg_macro = "warn"
+empty_structs_with_brackets = "warn"
+enum_glob_use = "warn"
+exit = "warn"
+filetype_is_file = "warn"
+get_unwrap = "warn"
+if_then_some_else_none = "warn"
+impl_trait_in_params = "warn"
+let_underscore_must_use = "warn"
+lossy_float_literal = "warn"
+map_err_ignore = "warn"
+mem_forget = "warn"
+missing_docs_in_private_items = "warn"
+mod_module_files = "warn"
+multiple_inherent_impl = "warn"
+mutex_atomic = "warn"
+pattern_type_mismatch = "warn"
+pub_without_shorthand = "warn"
+same_name_method = "warn"
+str_to_string = "warn"
+string_add = "warn"
+undocumented_unsafe_blocks = "warn"
+unnecessary_self_imports = "warn"
+unneeded_field_pattern = "warn"
+unseparated_literal_suffix = "warn"
+wildcard_enum_match_arm = "warn"

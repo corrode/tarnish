@@ -1,4 +1,4 @@
-use tarnish::{run_main, Process, Worker};
+use tarnish::{Process, Task};
 use serde::{Deserialize, Serialize};
 
 // Define custom input/output types with automatic serialization
@@ -13,11 +13,11 @@ enum Output {
     Message(String),
 }
 
-// Define the worker
+// Define the task
 #[derive(Default)]
-struct EchoWorker;
+struct EchoTask;
 
-impl Worker for EchoWorker {
+impl Task for EchoTask {
     type Input = Input;
     type Output = Output;
     type Error = String;
@@ -41,13 +41,13 @@ impl Worker for EchoWorker {
 }
 
 fn main() {
-    run_main::<EchoWorker>(parent_main);
+    tarnish::main::<EchoTask>(parent_main);
 }
 
 fn parent_main() {
     println!("[PARENT] Starting echo example with automatic serde serialization\n");
 
-    let mut process = Process::<EchoWorker>::spawn()
+    let mut process = Process::<EchoTask>::spawn()
         .expect("Failed to spawn process");
 
     // Test different input types - serialization is automatic!

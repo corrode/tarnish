@@ -1,10 +1,10 @@
-use tarnish::{run_main, Worker, Process};
+use tarnish::{Task, Process};
 
-// Worker for potentially dangerous computations
+// Task for potentially dangerous computations
 #[derive(Default)]
 struct Calculator;
 
-impl Worker for Calculator {
+impl Task for Calculator {
     type Input = String;   // Use String (has blanket impl)
     type Output = String;
     type Error = String;
@@ -26,7 +26,7 @@ impl Worker for Calculator {
 }
 
 fn main() {
-    run_main::<Calculator>(parent_main);
+    tarnish::main::<Calculator>(parent_main);
 }
 
 fn parent_main() {
