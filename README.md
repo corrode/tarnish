@@ -64,7 +64,7 @@ Either way, your parent process keeps running.
 
 The task trait looks like this:
 
-```rust
+```rust,ignore
 pub trait Task: Default + 'static {
     type Input: Serialize + Deserialize;
     type Output: Serialize + Deserialize;
@@ -84,8 +84,8 @@ There is a blanket implementation for those.
 The original use-case is isolating unsafe FFI calls, so let's look at an example
 in that context.
 
-```rust
-use tarnish::{Task, Process, main};
+```rust,no_run
+use tarnish::{Task, Process};
 use serde::{Serialize, Deserialize};
 
 #[derive(Default)]
@@ -99,7 +99,7 @@ struct Input {
     data: Vec<u8>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct Output {
     success: bool,
     data: Vec<u8>,
@@ -158,7 +158,7 @@ fn parent_main() {
 }
 
 // Your unsafe FFI declaration
-extern "C" {
+unsafe extern "C" {
     fn some_unsafe_c_function(data: *const u8, len: usize) -> *mut std::ffi::c_void;
 }
 ```
@@ -177,7 +177,7 @@ When a task crashes mid-operation, `process.call()` automatically restarts the t
 
 You control the retry logic. Want to retry once?
 
-```rust
+```rust,ignore
 // Try once, retry on failure
 let result = process.call(input.clone())
     .or_else(|_| process.call(input));
