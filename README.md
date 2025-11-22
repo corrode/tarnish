@@ -1,37 +1,40 @@
 # tarnish
 
-A library for running code in isolated processes with automatic panic recovery.
+A library for isolating crash-prone code in separate processes with automatic recovery.
 
 ## Why?
 
-Sometimes you need to run code that might crash. Maybe you're calling into a C
-library through FFI, and somewhere in that library there's a null pointer
-dereference in disguise? Or you're loading plugins from users and can't
-guarantee they won't panic. Or you're using a third-party sys-crate that wasn't
-audited yet.
+Sometimes you need to run code that might crash your process. Maybe you're
+calling into a C library through FFI, and somewhere in that library there's a
+null pointer dereference waiting to happen. Or you're using a third-party
+sys-crate with brittle unsafe code. Or you're experimenting with code that
+panics unpredictably.
 
 Rust's type system can't protect you from segfaults in C code. It can't prevent
-an `abort()` call in a dependency either. When those things happen, the entire
-process terminates.
+an `abort()` call in a dependency. When those things happen, the entire process
+terminates.
 
-This library aims to solve that problem.
+This library provides **crash isolation**: the fragile code runs in a separate
+process. If it crashes, the parent process survives and can restart the worker.
 
-With tarnish, the dangerous parts run in a separate process. 
-It was born out of necessity to handle the specific issue of wrapping an
-untrusted sys-crate that made unsafe calls to C. If that crashes, the parent
-process detects the failure and spawns a fresh worker. This pattern turns out to
-be surprisingly effective, which is why I generalized the pattern
-into a reusable library. That said, I haven't used it specifically outside of my
-narrow FFI use case yet, so be cautious still.
+> [!WARNING]
+> This library provides **crash isolation**, not **security isolation**. It protects
+> your parent process from crashes (segfaults, panics, aborts), but does NOT sandbox
+> malicious code. Worker processes have full access to the filesystem, network, and
+> other system resources. Do not use this to run untrusted code.
+
+This library was born out of necessity to wrap a brittle FFI binding that would
+occasionally segfault. That specific use case works well. I haven't extensively
+tested it beyond that, so proceed with appropriate caution for your use case.
 
 ## Features
 
-- Process-level isolation (survives segfaults/FFI crashes)
-- Automatic restart after crashes
-- Trait-based API (not macro-based)
-- Built-in type-safe message passing
-- Production-focused
-- General-purpose (any code, not just FFI)
+- **Crash isolation**: Process-level isolation survives segfaults, panics, and aborts
+- **Automatic recovery**: Workers automatically restart after crashes
+- **Type-safe messaging**: Built-in serialization for process communication
+- **Trait-based API**: Simple, composable design
+- **Cross-platform**: Works anywhere Rust can spawn processes
+- **General-purpose**: Not limited to FFI use cases
 
 ## How It Works 
 
@@ -77,10 +80,10 @@ everything else happens behind the scenes. You can also use types from the
 standard library like `String` for both input and output if that's all you need.
 (There is a blanket implementation for those.)
 
-## Example Use-Case: Wrapping Unsafe FFI
+## Example Use-Case: Wrapping Crash-Prone FFI
 
-The original use-case is isolating unsafe FFI calls, so let's look at an example
-in more detail. 
+The original use-case is isolating FFI calls that might crash, so let's look at
+an example in more detail. 
 
 ```rust,no_run
 use tarnish::{Task, Process};
@@ -109,8 +112,8 @@ impl Task for UnsafeFFIWrapper {
     type Error = String;
 
     fn run(&mut self, input: Input) -> Result<Output, String> {
-        // This unsafe block might segfault or corrupt memory!
-        // But if it does, only this process dies and not the parent.
+        // This unsafe block might segfault!
+        // If it does, only this worker process dies, not the parent.
         unsafe {
             let result = some_unsafe_c_function(
                 input.data.as_ptr(),
@@ -148,8 +151,8 @@ fn parent_main() {
             println!("FFI call succeeded: {:?}", output);
         }
         Err(e) => {
-            // If the C code segfaulted, we'll see an error here
-            // but our parent process is still running
+            // If the C code segfaulted, we get an error here,
+            // but the parent process is still running
             eprintln!("Worker crashed or returned error: {}", e);
         }
     }
@@ -206,18 +209,19 @@ If you really don't want the serde dependency, you can disable the default
 features and implement `MessageEncode` and `MessageDecode` manually for your
 types. But honestly, you probably want serde.
 
-## Notes
+## Limitations
 
-Each task type gets its own environment variable based on its type name:
-`__TARNISH_WORKER_{TypeName}__`. This means you can have multiple different
-task types in the same binary without them stepping on each other's toes.
+> [!CAUTION]
+> Workers are **not sandboxed**. They run with the same privileges as the parent
+> process and can access files, network, environment variables, etc. This library
+> only isolates crashes, not security threats.
 
-Tasks must implement `Default` (so we can spawn fresh ones) and be `'static`
-(no borrowed data, since they cross process boundaries).
+**Platform support**: Tested on macOS. Probably works on other
+Unix-like systems. Windows support would require work around process spawning
+and signal handling.
 
-Only tested on macOS and Linux. It probably works on other Unix-like systems.
-Windows support would require some work around process spawning and signal
-handling.
+**Requirements**: Tasks must implement `Default` (for spawning fresh workers)
+and be `'static` (no borrowed data across process boundaries).
 
 ## Similar Libraries
 
