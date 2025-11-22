@@ -62,6 +62,7 @@
     clippy::pattern_type_mismatch,
     clippy::multiple_crate_versions
 )]
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
 
 use std::any;
 use std::env;
@@ -69,9 +70,6 @@ use std::fmt;
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
-
-// Run doctests from README.md
-#[cfg_attr(doctest, doc = include_str!("../README.md"))]
 
 /// Environment variable prefix for child process detection
 /// The full variable name is: __`TARNISH_WORKER`_{`TypeName`}__
