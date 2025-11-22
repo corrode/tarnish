@@ -14,15 +14,15 @@ Rust's type system can't protect you from segfaults in C code. It can't prevent
 an `abort()` call in a dependency either. When those things happen, the entire
 process terminates.
 
-This library was born out of necessity to handle the specific problem of
-wrapping an untrusted sys-crate that made unsafe calls to C. With tarnish, the
-dangerous parts run in a separate process. If that crashes, the parent process
-detects the failure and spawns a fresh worker.
+This library aims to solve that problem.
 
-This pattern turns out to be useful for various kinds of systems programming.
-Any code where you can't guarantee stability can be isolated this way, which is
-why I generalized the pattern into a reusable library. That said, I haven't used
-it specifically outside of my narrow FFI use case yet, so be cautious still.
+With tarnish, the dangerous parts run in a separate process. 
+It was born out of necessity to handle the specific issue of wrapping an
+untrusted sys-crate that made unsafe calls to C. If that crashes, the parent
+process detects the failure and spawns a fresh worker. This pattern turns out to
+be surprisingly effective, which is why I generalized the pattern
+into a reusable library. That said, I haven't used it specifically outside of my
+narrow FFI use case yet, so be cautious still.
 
 ## Features
 
@@ -33,9 +33,7 @@ it specifically outside of my narrow FFI use case yet, so be cautious still.
 - Production-focused
 - General-purpose (any code, not just FFI)
 
-## Under The Hood
-
-The trick is surprisingly simple.
+## How It Works 
 
 You implement a `Task` trait that encapsulates your risky business logic. When
 you spawn a worker, the library creates a fresh copy of your own binary, but
@@ -74,15 +72,15 @@ pub trait Task: Default + 'static {
 }
 ```
 
-Your input and output types just need to derive `Serialize` and `Deserialize`.
-Everything else happens behind the scenes. You can also use types from the
+Your input and output types need to derive `Serialize` and `Deserialize`;
+everything else happens behind the scenes. You can also use types from the
 standard library like `String` for both input and output if that's all you need.
-There is a blanket implementation for those.
+(There is a blanket implementation for those.)
 
 ## Example Use-Case: Wrapping Unsafe FFI
 
 The original use-case is isolating unsafe FFI calls, so let's look at an example
-in that context.
+in more detail. 
 
 ```rust,no_run
 use tarnish::{Task, Process};
@@ -164,18 +162,19 @@ unsafe extern "C" {
 ```
 
 Note how `main` just calls `tarnish::main()` with the parent logic function.
-This handles the check for parent-vs-task automatically.
+This handles the check for parent-vs-task context. 
 
 ## Shutdown
 
 When you drop a `Process` handle, it sends a shutdown message to the task and
-waits up to 5 seconds. If the task doesn't exit cleanly, it gets a `SIGKILL`.
+waits for up to 5 seconds. If the task doesn't exit cleanly, it gets a `SIGKILL`.
 
 ## When Tasks Crash
 
-When a task crashes mid-operation, `process.call()` automatically restarts the task and returns an error. The fresh task is ready for the next call.
+When a task crashes mid-operation, `process.call()` automatically restarts the
+task and returns an error. The fresh task is ready for the next call.
 
-You control the retry logic. Want to retry once?
+You have to retry the operation yourself. 
 
 ```rust,ignore
 // Try once, retry on failure
@@ -183,7 +182,8 @@ let result = process.call(input.clone())
     .or_else(|_| process.call(input));
 ```
 
-Or implement more sophisticated retry logic with backoff, limits, etc. The library handles keeping a fresh task available, you decide when to retry.
+Or implement more sophisticated retry logic with backoff, limits, etc. The
+library handles keeping a fresh task available, you decide when to retry.
 
 ## Serialization format
 
