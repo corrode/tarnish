@@ -53,7 +53,7 @@ While `catch_unwind` catches panics within the same process, `tarnish` isolates 
 
 Here are some examples of what `catch_unwind` *cannot* handle:
 
-```rust
+```rust,ignore
 use std::panic;
 
 // ❌ Segfault from unsafe code
