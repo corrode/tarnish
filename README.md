@@ -190,20 +190,15 @@ library handles keeping a fresh task available, you decide when to retry.
 
 ## Serialization format
 
-Messages are currently serialized with
-[postcard](https://github.com/jamesmunns/postcard), a compact binary format
-that's roughly 10-20% the size of JSON. Messages are then base64 encoded before
-transmission.
+Messages are serialized with [postcard](https://github.com/jamesmunns/postcard)
+using [COBS encoding](https://en.wikipedia.org/wiki/Consistent_Overhead_Byte_Stuffing).
+Postcard is a compact binary format (~10-20% the size of JSON), and COBS adds
+only ~0.4% overhead while providing natural frame delimiters.
 
-**Why base64?** The parent and task communicate over stdin/stdout using a
-line-based protocol (one message per line). Postcard produces binary output
-which can contain newline bytes that would break our line delimiter. Base64
-encoding ensures messages are text-safe. This adds ~33% overhead but is simple
-and correct. The alternative would be length-prefixed framing, which is more
-complex.
+**How it works**: COBS encoding transforms binary data to never contain 0x00
+bytes, which we then use as message delimiters.
 
-This is an implementation detail. Future versions might change the format, or
-let you pick your own. For now, postcard + base64 does the job well.
+This is an implementation detail, however, and may change in future versions.
 
 If you really don't want the serde dependency, you can disable the default
 features and implement `MessageEncode` and `MessageDecode` manually for your

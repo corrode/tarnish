@@ -9,13 +9,9 @@ repository = "https://github.com/corrode/tarnish"
 keywords = ["process", "isolation", "sandbox", "fault-tolerance", "ffi"]
 categories = ["concurrency", "os"]
 
-[features]
-default = ["serde"]
-serde = ["dep:serde", "dep:postcard"]
-
 [dependencies]
-serde = { version = "1.0", features = ["derive"], optional = true }
-postcard = { version = "1.0", features = ["alloc"], optional = true }
+serde = { version = "1.0", features = ["derive"] }
+postcard = { version = "1.0", features = ["alloc"] }
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }

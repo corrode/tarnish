@@ -51,10 +51,8 @@
 //!
 //! This crate allows certain restrictive lints where they don't add value:
 //! - `missing_docs_in_private_items`: Internal implementation details don't need docs
-//! - `arithmetic_side_effects`: Base64 encoding uses safe arithmetic
-//! - `indexing_slicing`: Base64 uses bounds-checked indexing
 //! - `pattern_type_mismatch`: Pattern matching on internal enums is intentional
-//! - `shadow_reuse`: Trimming strings is a common pattern
+//! - `multiple_crate_versions`: Acceptable for development dependencies
 
 // Allow certain restrictive lints that don't add value for this crate
 #![allow(
@@ -67,9 +65,11 @@
 use std::any;
 use std::env;
 use std::fmt;
-use std::io::{self, BufRead, BufReader, BufWriter, Write};
+use std::io::{self, Read, Write};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
+
+use postcard::accumulator::{CobsAccumulator, FeedResult};
 
 /// Environment variable prefix for child process detection
 /// The full variable name is: __`TARNISH_WORKER`_{`TypeName`}__
@@ -87,12 +87,12 @@ fn worker_env_name<T: 'static>() -> String {
 }
 
 /// Protocol message types for parent-child communication
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 enum Message {
-    /// Request from parent to child
-    Request(String),
-    /// Successful response from child to parent
-    Response(String),
+    /// Request from parent to child (contains serialized payload)
+    Request(Vec<u8>),
+    /// Successful response from child to parent (contains serialized payload)
+    Response(Vec<u8>),
     /// Error response from child to parent
     Error(String),
     /// Shutdown signal from parent to child
@@ -104,39 +104,10 @@ enum Message {
 }
 
 impl Message {
-    fn encode(&self) -> String {
-        match self {
-            Self::Request(s) => format!("REQ:{s}"),
-            Self::Response(s) => format!("RES:{s}"),
-            Self::Error(s) => format!("ERR:{s}"),
-            Self::Shutdown => "SHUTDOWN".to_owned(),
-            Self::Ping => "PING".to_owned(),
-            Self::Pong => "PONG".to_owned(),
-        }
-    }
-
-    fn decode(s: &str) -> std::result::Result<Self, String> {
-        if s == "SHUTDOWN" {
-            return Ok(Self::Shutdown);
-        }
-        if s == "PING" {
-            return Ok(Self::Ping);
-        }
-        if s == "PONG" {
-            return Ok(Self::Pong);
-        }
-
-        if let Some(payload) = s.strip_prefix("REQ:") {
-            return Ok(Self::Request(payload.to_owned()));
-        }
-        if let Some(payload) = s.strip_prefix("RES:") {
-            return Ok(Self::Response(payload.to_owned()));
-        }
-        if let Some(payload) = s.strip_prefix("ERR:") {
-            return Ok(Self::Error(payload.to_owned()));
-        }
-
-        Err(format!("Invalid message format: {s}"))
+    /// Encode message to COBS-encoded bytes with 0x00 terminator
+    #[allow(clippy::expect_used)] // Message serialization is infallible for our internal types
+    fn encode(&self) -> Vec<u8> {
+        postcard::to_allocvec_cobs(self).expect("Message serialization should not fail")
     }
 }
 
@@ -187,173 +158,49 @@ pub type Result<T> = std::result::Result<T, ProcessError>;
 
 /// Trait for encoding messages to send over process boundaries
 ///
-/// # Implementation
+/// Automatically implemented for all types that implement `serde::Serialize`.
+/// Uses postcard with COBS encoding for compact binary serialization.
 ///
-/// When the `serde` feature is enabled (default), this is automatically implemented
-/// for all types that implement `serde::Serialize` using postcard serialization.
-///
-/// **Note**: The serialization format (currently postcard) is an implementation detail
-/// and may change in future versions for performance or compatibility improvements.
-///
-/// Without the `serde` feature, implement this manually for your types.
+/// **Note**: The serialization format is an implementation detail and may
+/// change in future versions for performance or compatibility improvements.
 pub trait MessageEncode {
-    /// Encode the message to a string for transmission
-    fn encode(&self) -> String;
+    /// Encode the message to bytes for transmission
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the message cannot be encoded.
+    fn encode(&self) -> std::result::Result<Vec<u8>, String>;
 }
 
 /// Trait for decoding messages received over process boundaries
 ///
-/// # Implementation
-///
-/// When the `serde` feature is enabled (default), this is automatically implemented
-/// for all types that implement `serde::Deserialize` using postcard deserialization.
-///
-/// **Note**: The serialization format (currently postcard) is an implementation detail
-/// and may change in future versions for performance or compatibility improvements.
-///
-/// Without the `serde` feature, implement this manually for your types.
+/// Automatically implemented for all types that implement `serde::Deserialize`.
+/// Uses postcard with COBS encoding for compact binary serialization.
 pub trait MessageDecode: Sized {
-    /// Decode a string into a message
+    /// Decode bytes into a message
     ///
     /// # Errors
     ///
-    /// Returns an error if the string cannot be decoded into the expected type.
-    fn decode(s: &str) -> std::result::Result<Self, String>;
+    /// Returns an error if the bytes cannot be decoded into the expected type.
+    fn decode(bytes: &[u8]) -> std::result::Result<Self, String>;
 }
 
-// Automatic serialization via serde (enabled by default)
-#[cfg(feature = "serde")]
-mod serde_impl {
-    use super::{MessageDecode, MessageEncode};
-    use serde::{Deserialize, Serialize};
-
-    /// Blanket implementation for all Serialize types
-    ///
-    /// Uses postcard for compact binary serialization, then base64 encoding
-    /// for safe string transmission over stdin/stdout.
-    impl<T: Serialize> MessageEncode for T {
-        fn encode(&self) -> String {
-            // SAFETY: Postcard serialization of valid Serialize types should never fail
-            #[allow(clippy::expect_used)]
-            let bytes =
-                postcard::to_allocvec(self).expect("Serialization should not fail for valid types");
-            // Use base64 encoding for safe string transmission
-            base64_encode(&bytes)
-        }
-    }
-
-    /// Blanket implementation for all Deserialize types
-    impl<T: for<'de> Deserialize<'de>> MessageDecode for T {
-        fn decode(s: &str) -> std::result::Result<Self, String> {
-            let bytes = base64_decode(s).map_err(|e| format!("Base64 decode error: {e}"))?;
-            postcard::from_bytes(&bytes).map_err(|e| format!("Deserialization error: {e}"))
-        }
-    }
-
-    // Base64 encoding for safe transmission over stdin/stdout.
-    //
-    // We use a line-based protocol (read_line/writeln) for communication between
-    // parent and worker. Postcard produces binary data which can contain newline
-    // bytes that would break our line delimiter. Base64 encoding ensures the
-    // serialized messages are text-safe and won't contain newlines.
-    //
-    // This adds ~33% overhead but is simple and correct. Alternative would be
-    // length-prefixed framing which is more complex.
-    #[allow(
-        clippy::indexing_slicing,
-        clippy::arithmetic_side_effects,
-        clippy::unseparated_literal_suffix
-    )]
-    fn base64_encode(bytes: &[u8]) -> String {
-        const BASE64_CHARS: &[u8] =
-            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        let mut result = String::new();
-
-        for chunk in bytes.chunks(3) {
-            let mut buf = [0_u8; 3];
-            for (i, &byte) in chunk.iter().enumerate() {
-                buf[i] = byte;
-            }
-
-            let b1 = (buf[0] >> 2) as usize;
-            let b2 = (((buf[0] & 0x03) << 4) | (buf[1] >> 4)) as usize;
-            let b3 = (((buf[1] & 0x0F) << 2) | (buf[2] >> 6)) as usize;
-            let b4 = (buf[2] & 0x3F) as usize;
-
-            result.push(BASE64_CHARS[b1] as char);
-            result.push(BASE64_CHARS[b2] as char);
-            result.push(if chunk.len() > 1 {
-                BASE64_CHARS[b3] as char
-            } else {
-                '='
-            });
-            result.push(if chunk.len() > 2 {
-                BASE64_CHARS[b4] as char
-            } else {
-                '='
-            });
-        }
-
-        result
-    }
-
-    #[allow(clippy::arithmetic_side_effects, clippy::shadow_reuse)]
-    fn base64_decode(s: &str) -> std::result::Result<Vec<u8>, String> {
-        let s = s.trim_end_matches('=');
-        let mut result = Vec::new();
-        let mut buf = 0_u32;
-        let mut bits = 0;
-
-        for ch in s.chars() {
-            let val = match ch {
-                'A'..='Z' => ch as u32 - 'A' as u32,
-                'a'..='z' => ch as u32 - 'a' as u32 + 26,
-                '0'..='9' => ch as u32 - '0' as u32 + 52,
-                '+' => 62,
-                '/' => 63,
-                _ => return Err(format!("Invalid base64 character: {ch}")),
-            };
-
-            buf = (buf << 6) | val;
-            bits += 6;
-
-            if bits >= 8 {
-                bits -= 8;
-                // Truncation is intentional - extracting byte from decoded bits
-                #[allow(clippy::cast_possible_truncation)]
-                {
-                    result.push((buf >> bits) as u8);
-                }
-                buf &= (1 << bits) - 1;
-            }
-        }
-
-        Ok(result)
+/// Blanket implementation for all `Serialize` types
+///
+/// Uses postcard with COBS encoding for compact binary serialization
+/// with frame delimiters (0x00 bytes).
+impl<T: serde::Serialize> MessageEncode for T {
+    fn encode(&self) -> std::result::Result<Vec<u8>, String> {
+        postcard::to_allocvec_cobs(self).map_err(|e| format!("COBS encoding error: {e}"))
     }
 }
 
-// Manual implementation when serde feature is disabled
-#[cfg(not(feature = "serde"))]
-mod manual_impl {
-    use super::{MessageDecode, MessageEncode};
-
-    // Blanket implementations for String when serde is disabled
-    impl MessageEncode for String {
-        fn encode(&self) -> String {
-            self.clone()
-        }
-    }
-
-    impl MessageDecode for String {
-        fn decode(s: &str) -> std::result::Result<Self, String> {
-            Ok(s.to_string())
-        }
-    }
-
-    impl MessageEncode for &str {
-        fn encode(&self) -> String {
-            self.to_string()
-        }
+/// Blanket implementation for all Deserialize types
+impl<T: for<'de> serde::Deserialize<'de>> MessageDecode for T {
+    fn decode(bytes: &[u8]) -> std::result::Result<Self, String> {
+        // COBS decoding happens in-place, so we need to copy to a mutable buffer
+        let mut buf = bytes.to_vec();
+        postcard::from_bytes_cobs(&mut buf).map_err(|e| format!("COBS decoding error: {e}"))
     }
 }
 
@@ -442,8 +289,8 @@ pub trait Task: Default + 'static {
 /// ```
 pub struct Process<T: Task> {
     child: Child,
-    stdin: BufWriter<std::process::ChildStdin>,
-    stdout: BufReader<std::process::ChildStdout>,
+    stdin: std::process::ChildStdin,
+    stdout: std::process::ChildStdout,
     _phantom: std::marker::PhantomData<T>,
 }
 
@@ -480,8 +327,8 @@ impl<T: Task> Process<T> {
 
         Ok(Self {
             child,
-            stdin: BufWriter::new(stdin),
-            stdout: BufReader::new(stdout),
+            stdin,
+            stdout,
             _phantom: std::marker::PhantomData,
         })
     }
@@ -497,7 +344,9 @@ impl<T: Task> Process<T> {
     /// Returns an error if communication fails, the worker crashes, or the task returns an error.
     #[allow(clippy::needless_pass_by_value)] // We want ownership to prevent reuse of stale data
     pub fn call(&mut self, input: T::Input) -> Result<T::Output> {
-        let encoded_input = input.encode();
+        let encoded_input = input
+            .encode()
+            .map_err(|e| ProcessError::ProtocolError(format!("Failed to encode input: {e}")))?;
 
         // Send request
         if let Err(e) = self.send_message(&Message::Request(encoded_input)) {
@@ -531,25 +380,41 @@ impl<T: Task> Process<T> {
     }
 
     fn send_message(&mut self, msg: &Message) -> Result<()> {
-        let encoded = msg.encode();
-        writeln!(self.stdin, "{encoded}")?;
-        self.stdin.flush()?;
+        let bytes = msg.encode();
+        self.stdin.write_all(&bytes)?;
         Ok(())
     }
 
-    #[allow(clippy::shadow_reuse)] // Trimming string is idiomatic
     fn receive_message(&mut self) -> Result<Message> {
-        let mut line = String::new();
-        let bytes_read = self.stdout.read_line(&mut line)?;
+        // Use CobsAccumulator for efficient streaming reads
+        let mut raw_buf = [0_u8; 256];
+        let mut cobs_buf: CobsAccumulator<1024> = CobsAccumulator::new();
 
-        if bytes_read == 0 {
-            return Err(ProcessError::ProcessTerminated);
+        loop {
+            let bytes_read = self.stdout.read(&mut raw_buf)?;
+
+            if bytes_read == 0 {
+                return Err(ProcessError::ProcessTerminated);
+            }
+
+            #[allow(clippy::indexing_slicing)] // bytes_read is guaranteed to be <= raw_buf.len()
+            let mut window = &raw_buf[..bytes_read];
+
+            while !window.is_empty() {
+                window = match cobs_buf.feed::<Message>(window) {
+                    FeedResult::Consumed => break,
+                    FeedResult::OverFull(remaining) => remaining,
+                    FeedResult::DeserError(_remaining) => {
+                        return Err(ProcessError::ProtocolError(
+                            "COBS deserialization error".to_owned(),
+                        ));
+                    }
+                    FeedResult::Success { data, .. } => {
+                        return Ok(data);
+                    }
+                };
+            }
         }
-
-        // Remove trailing newline
-        let line = line.trim_end();
-
-        Message::decode(line).map_err(ProcessError::ProtocolError)
     }
 
     fn restart(&mut self) -> Result<()> {
@@ -717,21 +582,20 @@ pub fn worker_main<T: Task>() -> Option<i32> {
 }
 
 #[allow(clippy::print_stderr)] // Worker process intentionally logs to stderr
-#[allow(clippy::shadow_reuse)] // Wrapping stdin/stdout in buffered readers is idiomatic
 fn run_worker_loop<T: Task>() -> i32 {
-    let stdin = io::stdin();
-    let stdout = io::stdout();
-    let mut stdin = BufReader::new(stdin);
-    let mut stdout = BufWriter::new(stdout);
+    let mut stdin = io::stdin();
+    let mut stdout = io::stdout();
 
     // Create the worker instance
     let mut worker = T::default();
 
-    loop {
-        let mut line = String::new();
+    // CobsAccumulator for receiving messages
+    let mut raw_buf = [0_u8; 256];
+    let mut cobs_buf: CobsAccumulator<1024> = CobsAccumulator::new();
 
-        // Read message from parent
-        let bytes_read = match stdin.read_line(&mut line) {
+    loop {
+        // Read chunk from parent
+        let bytes_read = match stdin.read(&mut raw_buf) {
             Ok(n) => n,
             Err(e) => {
                 eprintln!("[CHILD] Failed to read from parent: {e}");
@@ -744,63 +608,77 @@ fn run_worker_loop<T: Task>() -> i32 {
             return 0;
         }
 
-        let line = line.trim_end();
+        #[allow(clippy::indexing_slicing)] // bytes_read is guaranteed to be <= raw_buf.len()
+        let mut window = &raw_buf[..bytes_read];
 
-        // Decode message
-        let message = match Message::decode(line) {
-            Ok(msg) => msg,
-            Err(e) => {
-                eprintln!("[CHILD] Protocol error: {e}");
-                return 1;
-            }
-        };
-
-        match message {
-            Message::Shutdown => {
-                // Graceful shutdown requested
-                return 0;
-            }
-            Message::Ping => {
-                // Health check
-                if send_message(&mut stdout, &Message::Pong).is_err() {
+        while !window.is_empty() {
+            let message = match cobs_buf.feed::<Message>(window) {
+                FeedResult::Consumed => break,
+                FeedResult::OverFull(remaining) => {
+                    window = remaining;
+                    continue;
+                }
+                FeedResult::DeserError(_remaining) => {
+                    eprintln!("[CHILD] COBS deserialization error");
                     return 1;
                 }
-            }
-            Message::Request(encoded_input) => {
-                // Decode the input
-                let input = match T::Input::decode(&encoded_input) {
-                    Ok(inp) => inp,
-                    Err(e) => {
-                        eprintln!("[WORKER] Failed to decode input: {e}");
-                        let err_msg = Message::Error(format!("Decode error: {e}"));
-                        if send_message(&mut stdout, &err_msg).is_err() {
-                            return 1;
-                        }
-                        continue;
+                FeedResult::Success { data, remaining } => {
+                    window = remaining;
+                    data
+                }
+            };
+
+            match message {
+                Message::Shutdown => {
+                    // Graceful shutdown requested
+                    return 0;
+                }
+                Message::Ping => {
+                    // Health check
+                    if send_message(&mut stdout, &Message::Pong).is_err() {
+                        return 1;
                     }
-                };
+                }
+                Message::Request(encoded_input) => {
+                    // Decode the input
+                    let input = match T::Input::decode(&encoded_input) {
+                        Ok(inp) => inp,
+                        Err(e) => {
+                            eprintln!("[WORKER] Failed to decode input: {e}");
+                            let err_msg = Message::Error(format!("Decode error: {e}"));
+                            if send_message(&mut stdout, &err_msg).is_err() {
+                                return 1;
+                            }
+                            continue;
+                        }
+                    };
 
-                // Run business logic - panics will kill this process
-                // and the parent will detect and restart
-                let response = match worker.run(input) {
-                    Ok(output) => Message::Response(output.encode()),
-                    Err(err) => Message::Error(err.to_string()),
-                };
+                    // Run business logic - panics will kill this process
+                    // and the parent will detect and restart
+                    let response = match worker.run(input) {
+                        Ok(output) => match output.encode() {
+                            Ok(bytes) => Message::Response(bytes),
+                            Err(e) => Message::Error(format!("Encoding error: {e}")),
+                        },
+                        Err(err) => Message::Error(err.to_string()),
+                    };
 
-                if send_message(&mut stdout, &response).is_err() {
+                    if send_message(&mut stdout, &response).is_err() {
+                        return 1;
+                    }
+                }
+                Message::Response(_) | Message::Error(_) | Message::Pong => {
+                    eprintln!("[CHILD] Unexpected message type");
                     return 1;
                 }
-            }
-            Message::Response(_) | Message::Error(_) | Message::Pong => {
-                eprintln!("[CHILD] Unexpected message type");
-                return 1;
             }
         }
     }
 }
 
-fn send_message(stdout: &mut BufWriter<io::Stdout>, msg: &Message) -> io::Result<()> {
-    writeln!(stdout, "{}", msg.encode())?;
+fn send_message(stdout: &mut io::Stdout, msg: &Message) -> io::Result<()> {
+    let bytes = msg.encode();
+    stdout.write_all(&bytes)?;
     stdout.flush()?;
     Ok(())
 }
