@@ -17,12 +17,6 @@ terminates.
 This library provides **crash isolation**: the fragile code runs in a separate
 process. If it crashes, the parent process survives and can restart the worker.
 
-> [!WARNING]
-> This library provides **crash isolation**, not **security isolation**. It protects
-> your parent process from crashes (segfaults, panics, aborts), but does NOT sandbox
-> malicious code. Worker processes have full access to the filesystem, network, and
-> other system resources. Do not use this to run untrusted code.
-
 This library was born out of necessity to wrap a brittle FFI binding that would
 occasionally segfault. That specific use case works well. I haven't extensively
 tested it beyond that, so proceed with appropriate caution for your use case.
@@ -206,10 +200,11 @@ types. But honestly, you probably want serde.
 
 ## Limitations
 
-> [!CAUTION]
-> Workers are **not sandboxed**. They run with the same privileges as the parent
-> process and can access files, network, environment variables, etc. This library
-> only isolates crashes, not security threats.
+> [!WARNING]
+> This library provides **crash isolation**, not **security isolation**. It protects
+> your parent process from crashes (segfaults, panics, aborts), but does NOT sandbox
+> malicious code. Worker processes have full access to the filesystem, network, and
+> other system resources. Do not use this to run untrusted code.
 
 **Platform support**: Tested on macOS. Probably works on other
 Unix-like systems. Windows support would require work around process spawning
