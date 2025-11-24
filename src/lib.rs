@@ -97,17 +97,14 @@ enum Message {
     Error(String),
     /// Shutdown signal from parent to child
     Shutdown,
-    /// Ping to check if child is alive
-    Ping,
-    /// Pong response to ping
-    Pong,
 }
 
 impl Message {
     /// Encode message to COBS-encoded bytes with 0x00 terminator
-    #[allow(clippy::expect_used)] // Message serialization is infallible for our internal types
-    fn encode(&self) -> Vec<u8> {
-        postcard::to_allocvec_cobs(self).expect("Message serialization should not fail")
+    fn encode(&self) -> io::Result<Vec<u8>> {
+        postcard::to_allocvec_cobs(self).map_err(|e| {
+            io::Error::new(io::ErrorKind::InvalidData, format!("Message encoding failed: {e}"))
+        })
     }
 }
 
@@ -319,11 +316,19 @@ impl<T: Task> Process<T> {
             .spawn()
             .map_err(ProcessError::SpawnError)?;
 
-        // SAFETY: stdin/stdout are guaranteed to be Some because we piped them
-        #[allow(clippy::expect_used)]
-        let stdin = child.stdin.take().expect("Failed to get child stdin");
-        #[allow(clippy::expect_used)]
-        let stdout = child.stdout.take().expect("Failed to get child stdout");
+        // stdin/stdout are guaranteed to be Some because we piped them
+        let stdin = child.stdin.take().ok_or_else(|| {
+            ProcessError::SpawnError(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "Failed to capture child stdin",
+            ))
+        })?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            ProcessError::SpawnError(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "Failed to capture child stdout",
+            ))
+        })?;
 
         Ok(Self {
             child,
@@ -380,7 +385,7 @@ impl<T: Task> Process<T> {
     }
 
     fn send_message(&mut self, msg: &Message) -> Result<()> {
-        let bytes = msg.encode();
+        let bytes = msg.encode()?;
         self.stdin.write_all(&bytes)?;
         Ok(())
     }
@@ -397,8 +402,12 @@ impl<T: Task> Process<T> {
                 return Err(ProcessError::ProcessTerminated);
             }
 
-            #[allow(clippy::indexing_slicing)] // bytes_read is guaranteed to be <= raw_buf.len()
-            let mut window = &raw_buf[..bytes_read];
+            let mut window = raw_buf.get(..bytes_read).ok_or_else(|| {
+                ProcessError::ProtocolError(format!(
+                    "Read returned invalid byte count: {bytes_read} > {}",
+                    raw_buf.len()
+                ))
+            })?;
 
             while !window.is_empty() {
                 window = match cobs_buf.feed::<Message>(window) {
@@ -419,10 +428,8 @@ impl<T: Task> Process<T> {
 
     fn restart(&mut self) -> Result<()> {
         // Kill old child - ignore errors if already dead
-        #[allow(clippy::let_underscore_must_use)]
-        let _ = self.child.kill();
-        #[allow(clippy::let_underscore_must_use)]
-        let _ = self.child.wait();
+        drop(self.child.kill());
+        drop(self.child.wait());
 
         // Spawn new child and replace self with it
         let new_handle = Self::spawn_internal()?;
@@ -462,10 +469,8 @@ impl<T: Task> Drop for Process<T> {
 
         // Graceful shutdown timed out or failed, force kill
         // child.kill() sends SIGKILL on Unix and TerminateProcess on Windows
-        #[allow(clippy::let_underscore_must_use)]
-        let _ = self.child.kill();
-        #[allow(clippy::let_underscore_must_use)]
-        let _ = self.child.wait();
+        drop(self.child.kill());
+        drop(self.child.wait());
     }
 }
 
@@ -608,8 +613,13 @@ fn run_worker_loop<T: Task>() -> i32 {
             return 0;
         }
 
-        #[allow(clippy::indexing_slicing)] // bytes_read is guaranteed to be <= raw_buf.len()
-        let mut window = &raw_buf[..bytes_read];
+        let Some(mut window) = raw_buf.get(..bytes_read) else {
+            eprintln!(
+                "[CHILD] Read returned invalid byte count: {bytes_read} > {}",
+                raw_buf.len()
+            );
+            return 1;
+        };
 
         while !window.is_empty() {
             let message = match cobs_buf.feed::<Message>(window) {
@@ -632,12 +642,6 @@ fn run_worker_loop<T: Task>() -> i32 {
                 Message::Shutdown => {
                     // Graceful shutdown requested
                     return 0;
-                }
-                Message::Ping => {
-                    // Health check
-                    if send_message(&mut stdout, &Message::Pong).is_err() {
-                        return 1;
-                    }
                 }
                 Message::Request(encoded_input) => {
                     // Decode the input
@@ -667,7 +671,7 @@ fn run_worker_loop<T: Task>() -> i32 {
                         return 1;
                     }
                 }
-                Message::Response(_) | Message::Error(_) | Message::Pong => {
+                Message::Response(_) | Message::Error(_) => {
                     eprintln!("[CHILD] Unexpected message type");
                     return 1;
                 }
@@ -677,7 +681,7 @@ fn run_worker_loop<T: Task>() -> i32 {
 }
 
 fn send_message(stdout: &mut io::Stdout, msg: &Message) -> io::Result<()> {
-    let bytes = msg.encode();
+    let bytes = msg.encode()?;
     stdout.write_all(&bytes)?;
     stdout.flush()?;
     Ok(())
