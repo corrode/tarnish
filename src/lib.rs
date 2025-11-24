@@ -75,6 +75,13 @@ use postcard::accumulator::{CobsAccumulator, FeedResult};
 /// The full variable name is: __`TARNISH_WORKER`_{`TypeName`}__
 const WORKER_ENV_PREFIX: &str = "__TARNISH_WORKER_";
 
+/// Check if we're running in any worker context
+#[doc(hidden)]
+#[must_use]
+pub fn is_worker_process() -> bool {
+    env::vars().any(|(key, _)| key.starts_with(WORKER_ENV_PREFIX))
+}
+
 /// Maximum time to wait for graceful shutdown before sending SIGKILL
 const GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -103,7 +110,10 @@ impl Message {
     /// Encode message to COBS-encoded bytes with 0x00 terminator
     fn encode(&self) -> io::Result<Vec<u8>> {
         postcard::to_allocvec_cobs(self).map_err(|e| {
-            io::Error::new(io::ErrorKind::InvalidData, format!("Message encoding failed: {e}"))
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Message encoding failed: {e}"),
+            )
         })
     }
 }
@@ -685,4 +695,125 @@ fn send_message(stdout: &mut io::Stdout, msg: &Message) -> io::Result<()> {
     stdout.write_all(&bytes)?;
     stdout.flush()?;
     Ok(())
+}
+
+/// Run code in an isolated subprocess with automatic crash recovery
+///
+/// This macro creates an anonymous task and runs it immediately in a separate process.
+/// If the code panics or crashes, the parent process survives.
+///
+/// # Example
+///
+/// ```no_run
+/// use tarnish::task;
+///
+/// // Simple task with no input
+/// let result = task!(my_task: || -> Result<i32, String> {
+///     // This code runs in an isolated subprocess
+///     // If it panics, the parent process survives
+///     Ok(42)
+/// });
+///
+/// match result {
+///     Ok(value) => println!("Success: {}", value),
+///     Err(e) => println!("Task failed: {}", e),
+/// }
+/// ```
+///
+/// # Usage
+///
+/// Provide a unique identifier for each task, followed by the closure:
+///
+/// ```no_run
+/// # use tarnish::task;
+/// // With explicit return type
+/// let result1 = task!(my_task: || -> Result<i32, String> {
+///     Ok(42)
+/// });
+///
+/// // Without return type (defaults to tarnish::Result<()>)
+/// let result2 = task!(other_task: || {
+///     // Do something that might crash
+///     Ok(())
+/// });
+/// ```
+#[macro_export]
+macro_rules! task {
+    // Pattern 1: Without return type - defaults to tarnish::Result<()>
+    ($name:ident: || $body:block) => {{
+        paste::paste! {
+            #[derive(Default)]
+            struct [<__TarnishTask $name:camel>];
+
+            impl $crate::Task for [<__TarnishTask $name:camel>] {
+                type Input = ();
+                type Output = ();
+                type Error = $crate::ProcessError;
+
+                fn run(&mut self, _input: ()) -> ::std::result::Result<Self::Output, Self::Error> {
+                    (|| $body)()
+                }
+            }
+
+            // Check if we're the subprocess for this specific task
+            if let ::std::option::Option::Some(exit_code) = $crate::worker_main::<[<__TarnishTask $name:camel>]>() {
+                ::std::process::exit(exit_code);
+            }
+
+            // If we're a worker for a different task, skip this task! call
+            // The subprocess will continue until it finds the right task
+            if !$crate::is_worker_process() {
+                // We're the parent - spawn and run the task
+                (|| -> $crate::Result<()> {
+                    let mut process = $crate::Process::<[<__TarnishTask $name:camel>]>::spawn()?;
+                    process.call(())
+                })()
+            } else {
+                // Worker for different task - this shouldn't be reached as the worker
+                // should find its task and exit, but we need to return something
+                ::std::result::Result::Err($crate::ProcessError::ProtocolError(
+                    "Worker process did not find its task".to_owned()
+                ))
+            }
+        }
+    }};
+
+    // Pattern 2: With explicit return type
+    ($name:ident: || -> Result<$ok:ty, $err:ty> $body:block) => {{
+        paste::paste! {
+            #[derive(Default)]
+            struct [<__TarnishTask $name:camel>];
+
+            impl $crate::Task for [<__TarnishTask $name:camel>] {
+                type Input = ();
+                type Output = $ok;
+                type Error = $err;
+
+                fn run(&mut self, _input: ()) -> ::std::result::Result<Self::Output, Self::Error> {
+                    (|| $body)()
+                }
+            }
+
+            // Check if we're the subprocess for this specific task
+            if let ::std::option::Option::Some(exit_code) = $crate::worker_main::<[<__TarnishTask $name:camel>]>() {
+                ::std::process::exit(exit_code);
+            }
+
+            // If we're a worker for a different task, skip this task! call
+            // The subprocess will continue until it finds the right task
+            if !$crate::is_worker_process() {
+                // We're the parent - spawn and run the task
+                (|| -> $crate::Result<$ok> {
+                    let mut process = $crate::Process::<[<__TarnishTask $name:camel>]>::spawn()?;
+                    process.call(())
+                })()
+            } else {
+                // Worker for different task - this shouldn't be reached as the worker
+                // should find its task and exit, but we need to return something
+                ::std::result::Result::Err($crate::ProcessError::ProtocolError(
+                    "Worker process did not find its task".to_owned()
+                ))
+            }
+        }
+    }};
 }
