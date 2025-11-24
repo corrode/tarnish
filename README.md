@@ -1,6 +1,7 @@
 # tarnish
 
-A library for isolating crash-prone code in separate processes with automatic recovery.
+A library for isolating crash-prone code in separate processes with automatic
+recovery.
 
 ## Why?
 
@@ -29,6 +30,53 @@ tested it beyond that, so proceed with appropriate caution for your use case.
 - **Trait-based API**: Simple, composable design
 - **Cross-platform**: Works anywhere Rust can spawn processes
 - **General-purpose**: Not limited to FFI use cases
+
+## Differences to  `std::panic::catch_unwind`
+
+`std::panic::catch_unwind` can only catch Rust panics that use unwinding. 
+
+| Feature                     | `catch_unwind`                | `tarnish`                            |
+|-----------------------------|-------------------------------|--------------------------------------|
+| **Isolation Level**         | Thread-level (same process)   | Process-level (separate process)     |
+| **Survives segfaults**      | ❌ No                          | ✅ Yes                               |
+| **Survives C/FFI crashes**  | ❌ No                          | ✅ Yes                               |
+| **Survives `abort()`**      | ❌ No                          | ✅ Yes                               |
+| **Survives panic-abort**    | ❌ No                          | ✅ Yes                               |
+| **Survives stack overflow** | ❌ No*                         | ✅ Yes                               |
+| **Performance**             | Very fast (nanoseconds)       | Slower (process spawn + IPC)         |
+| **Memory overhead**         | Minimal                       | Separate process (~few MB)           |
+| **Trait bounds**            | Requires `UnwindSafe`         | Requires `Serialize` + `Deserialize` |
+| **Data sharing**            | Direct (same address space)   | Serialized (across process boundary) |
+
+The failures get handled on different levels.
+While `catch_unwind` catches panics within the same process, `tarnish` isolates code in a separate process to survive ANY crash.
+
+Here are some examples of what `catch_unwind` *cannot* handle:
+
+```rust
+use std::panic;
+
+// ❌ Segfault from unsafe code
+panic::catch_unwind(|| unsafe {
+    let ptr = std::ptr::null_mut::<i32>();
+    *ptr = 42; // SEGFAULT - entire process dies
+});
+
+// ❌ C library crash
+panic::catch_unwind(|| unsafe {
+    libc::abort(); // Terminates entire process
+});
+
+// ❌ Panic with -C panic=abort
+// (Terminates entire process)
+
+// ❌ Stack overflow (usually)
+// (May or may not be caught)
+```
+
+The cost of `tarnish` is higher latency and memory usage due to process spawning
+and inter-process communication. Use `catch_unwind` for pure Rust code, and
+`tarnish` when calling unsafe FFI or when you need absolute crash isolation. 
 
 ## How It Works 
 
@@ -233,6 +281,23 @@ and be `'static` (no borrowed data across process boundaries).
 | FFI focus | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ |
 | External commands | ✓ | ✗ | ✗ | ✗ | ✗ | ✓ |
 | Active maintenance | ✓ | ✗ | ✓ | ✓ | ✓ | ✓ |
+
+## Comparison with `std::panic::catch_unwind`
+
+The standard library's `catch_unwind` can only catch Rust panics that use unwinding.
+It **cannot** survive:
+- Segfaults from unsafe code or FFI
+- `abort()` calls
+- Panic with `-C panic=abort`
+- Most forms of undefined behavior
+
+**`tarnish` survives ALL of these** by running code in a separate process.
+
+See [COMPARISON.md](COMPARISON.md) for a detailed analysis including performance
+characteristics, use cases, and examples.
+
+**Quick rule**: Use `catch_unwind` for pure Rust code. Use `tarnish` when calling
+unsafe FFI or when you need absolute crash isolation.
 
 ## About The Name
 
