@@ -21,7 +21,7 @@ test: ## Run all tests
 check: ## Quick check (faster than build)
 	cargo check --all-targets
 
-clippy: ## Run clippy lints
+clippy lint: ## Run clippy lints
 	cargo clippy --all-targets -- -D warnings
 
 fmt: ## Format code
