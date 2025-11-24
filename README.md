@@ -282,23 +282,6 @@ and be `'static` (no borrowed data across process boundaries).
 | External commands | ✓ | ✗ | ✗ | ✗ | ✗ | ✓ |
 | Active maintenance | ✓ | ✗ | ✓ | ✓ | ✓ | ✓ |
 
-## Comparison with `std::panic::catch_unwind`
-
-The standard library's `catch_unwind` can only catch Rust panics that use unwinding.
-It **cannot** survive:
-- Segfaults from unsafe code or FFI
-- `abort()` calls
-- Panic with `-C panic=abort`
-- Most forms of undefined behavior
-
-**`tarnish` survives ALL of these** by running code in a separate process.
-
-See [COMPARISON.md](COMPARISON.md) for a detailed analysis including performance
-characteristics, use cases, and examples.
-
-**Quick rule**: Use `catch_unwind` for pure Rust code. Use `tarnish` when calling
-unsafe FFI or when you need absolute crash isolation.
-
 ## About The Name
 
 [Tarnish](https://en.wikipedia.org/wiki/Tarnish) is the protective layer that
