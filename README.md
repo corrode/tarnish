@@ -33,7 +33,7 @@ tested it beyond that, so proceed with appropriate caution for your use case.
 
 ## Differences to  `std::panic::catch_unwind`
 
-`std::panic::catch_unwind` can only catch Rust panics that use unwinding. 
+[`std::panic::catch_unwind`](https://doc.rust-lang.org/std/panic/fn.catch_unwind.html) can only catch Rust panics that use unwinding. 
 
 | Feature                     | `catch_unwind`                | `tarnish`                            |
 |-----------------------------|-------------------------------|--------------------------------------|
