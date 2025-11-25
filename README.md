@@ -122,6 +122,33 @@ everything else happens behind the scenes. You can also use types from the
 standard library like `String` for both input and output if that's all you need.
 (There is a blanket implementation for those.)
 
+## Inline Tasks Using the `task!` Macro
+
+For simple cases, you can use the `task!` macro instead of manually implementing the `Task` trait:
+
+```rust,no_run
+use tarnish::task;
+
+fn main() {
+    // Simple task with explicit return type
+    let result = task!(calculate: || -> Result<i32, String> {
+        // This code runs in an isolated process
+        Ok(42)
+    });
+
+    // Task with default return type (tarnish::Result<()>)
+    let result = task!(simple: || {
+        // Do something that might crash
+        Ok(())
+    });
+}
+```
+
+The macro automatically generates the `Task` implementation and handles process spawning. Each task runs in its own isolated process, so if it crashes, your main process survives.
+
+The macro is perfect for quick isolation of crash-prone code blocks without the ceremony of defining a full `Task` struct.
+Use the full `Task` trait when you need persistent workers that handle multiple requests, maintain state between calls, or when you want more control over the lifecycle.
+
 ## Example Use-Case: Wrapping Crash-Prone FFI
 
 The original use-case is isolating FFI calls that might crash, so let's look at
