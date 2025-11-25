@@ -146,6 +146,8 @@ fn main() {
 
 The macro automatically generates the `Task` implementation and handles process spawning. Each task runs in its own isolated process, so if it crashes, your main process survives.
 
+The label (`calculate`, `simple`) is required to generate a unique type for each task. When a subprocess spawns, it uses this label to identify which task it should run. Each `task!` call in your binary needs a unique label. If this turns out to be a limitation, please open an issue.
+
 The macro is perfect for quick isolation of crash-prone code blocks without the ceremony of defining a full `Task` struct.
 Use the full `Task` trait when you need persistent workers that handle multiple requests, maintain state between calls, or when you want more control over the lifecycle.
 
