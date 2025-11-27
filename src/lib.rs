@@ -66,6 +66,7 @@ use std::any;
 use std::env;
 use std::fmt;
 use std::io::{self, Read, Write};
+use std::num::NonZeroUsize;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -481,6 +482,163 @@ impl<T: Task> Drop for Process<T> {
         // child.kill() sends SIGKILL on Unix and TerminateProcess on Windows
         drop(self.child.kill());
         drop(self.child.wait());
+    }
+}
+
+/// A pool of worker processes for concurrent task execution.
+///
+/// `ProcessPool` manages multiple worker processes, distributing tasks across them
+/// using round-robin scheduling. Each worker runs in its own isolated process with
+/// automatic crash recovery.
+///
+/// # Example
+///
+/// ```no_run
+/// use std::num::NonZeroUsize;
+/// use tarnish::{Task, ProcessPool};
+///
+/// #[derive(Default)]
+/// struct HeavyComputation;
+///
+/// impl Task for HeavyComputation {
+///     type Input = Vec<u8>;
+///     type Output = u64;
+///     type Error = String;
+///
+///     fn run(&mut self, input: Vec<u8>) -> Result<u64, String> {
+///         // Expensive computation here
+///         Ok(input.iter().map(|&x| x as u64).sum())
+///     }
+/// }
+///
+/// tarnish::main::<HeavyComputation>(|| {
+///     let size = NonZeroUsize::new(4).unwrap();
+///     let mut pool = ProcessPool::<HeavyComputation>::new(size)
+///         .expect("Failed to create pool");
+///
+///     // Process 100 items across 4 workers
+///     for i in 0..100 {
+///         let result = pool.call(vec![i; 1000]);
+///         println!("Result {}: {:?}", i, result);
+///     }
+/// });
+/// ```
+pub struct ProcessPool<T: Task> {
+    workers: Vec<Process<T>>,
+    next_worker: std::sync::atomic::AtomicUsize,
+}
+
+impl<T: Task> ProcessPool<T> {
+    /// Create a new process pool with the specified number of workers.
+    ///
+    /// Each worker is a separate process that will be spawned immediately.
+    /// If any worker fails to spawn, an error is returned and no pool is created.
+    ///
+    /// # Arguments
+    ///
+    /// * `size` - The number of worker processes to spawn (must be non-zero).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any worker process fails to spawn.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use std::num::NonZeroUsize;
+    /// use tarnish::ProcessPool;
+    /// # use tarnish::Task;
+    /// # #[derive(Default)]
+    /// # struct MyTask;
+    /// # impl Task for MyTask {
+    /// #     type Input = String;
+    /// #     type Output = String;
+    /// #     type Error = String;
+    /// #     fn run(&mut self, input: String) -> Result<String, String> { Ok(input) }
+    /// # }
+    ///
+    /// let size = NonZeroUsize::new(4).unwrap();
+    /// let pool = ProcessPool::<MyTask>::new(size)?;
+    /// # Ok::<(), tarnish::ProcessError>(())
+    /// ```
+    pub fn new(size: NonZeroUsize) -> Result<Self> {
+        let workers = (0..size.get())
+            .map(|_| Process::<T>::spawn())
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(Self {
+            workers,
+            next_worker: std::sync::atomic::AtomicUsize::new(0),
+        })
+    }
+
+    /// Execute a task on the next available worker.
+    ///
+    /// This method uses round-robin scheduling to distribute work across workers.
+    /// The call blocks until the worker returns a result. If the worker crashes,
+    /// it will be automatically restarted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The worker process crashes and cannot be restarted
+    /// - Communication with the worker fails
+    /// - The worker returns a task error
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use std::num::NonZeroUsize;
+    /// # use tarnish::{Task, ProcessPool};
+    /// # #[derive(Default)]
+    /// # struct MyTask;
+    /// # impl Task for MyTask {
+    /// #     type Input = String;
+    /// #     type Output = String;
+    /// #     type Error = String;
+    /// #     fn run(&mut self, input: String) -> Result<String, String> { Ok(input) }
+    /// # }
+    /// let size = NonZeroUsize::new(4).unwrap();
+    /// let mut pool = ProcessPool::<MyTask>::new(size)?;
+    /// let result = pool.call("hello".to_string())?;
+    /// # Ok::<(), tarnish::ProcessError>(())
+    /// ```
+    #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
+    pub fn call(&mut self, input: T::Input) -> Result<T::Output> {
+        let idx = self
+            .next_worker
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            % self.workers.len();
+
+        self.workers
+            .get_mut(idx)
+            .ok_or_else(|| ProcessError::ProtocolError(format!("Invalid worker index: {idx}")))?
+            .call(input)
+    }
+
+    /// Returns the number of workers in the pool.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use std::num::NonZeroUsize;
+    /// # use tarnish::{Task, ProcessPool};
+    /// # #[derive(Default)]
+    /// # struct MyTask;
+    /// # impl Task for MyTask {
+    /// #     type Input = String;
+    /// #     type Output = String;
+    /// #     type Error = String;
+    /// #     fn run(&mut self, input: String) -> Result<String, String> { Ok(input) }
+    /// # }
+    /// let size = NonZeroUsize::new(4).unwrap();
+    /// let pool = ProcessPool::<MyTask>::new(size)?;
+    /// assert_eq!(pool.size(), 4);
+    /// # Ok::<(), tarnish::ProcessError>(())
+    /// ```
+    #[must_use]
+    pub const fn size(&self) -> usize {
+        self.workers.len()
     }
 }
 

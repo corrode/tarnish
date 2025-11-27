@@ -236,7 +236,51 @@ unsafe extern "C" {
 ```
 
 Note how `main` just calls `tarnish::main()` with the parent logic function.
-This handles the check for parent-vs-task context. 
+This handles the check for parent-vs-task context.
+
+## Process Pools
+
+For concurrent task execution we offer a `ProcessPool` to manage multiple worker processes.
+This is useful in situations where your tasks are CPU-bound, which is a common problem with `*-sys` crates.
+
+```rust,no_run
+use std::num::NonZeroUsize;
+use tarnish::{Task, ProcessPool};
+
+#[derive(Default)]
+struct HeavyComputation;
+
+impl Task for HeavyComputation {
+    type Input = Vec<u8>;
+    type Output = u64;
+    type Error = String;
+
+    fn run(&mut self, input: Vec<u8>) -> Result<u64, String> {
+        // Do the expensive computation
+        Ok(input.iter().map(|&x| x as u64).sum())
+    }
+}
+
+fn main() {
+    tarnish::main::<HeavyComputation>(|| {
+        let size = NonZeroUsize::new(4).unwrap();
+        let mut pool = ProcessPool::<HeavyComputation>::new(size)
+            .expect("Failed to create pool");
+
+        // Process tasks across 4 workers
+        for i in 0..100 {
+            let result = pool.call(vec![i; 1000]);
+            println!("Result: {:?}", result);
+        }
+    });
+}
+```
+
+Each pool provides a set of guarantees:
+- Uses round-robin scheduling to distribute work
+- Automatically restarts crashed workers, just like `Process` does
+- Each worker maintains its own isolated process memory
+- Workers persist between calls for efficiency
 
 ## Shutdown
 
